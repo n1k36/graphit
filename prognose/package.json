@@ -1,0 +1,16 @@
+{
+  "name": "prognose",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A Polymarket-style prediction market app with an LMSR automated market maker. Zero dependencies.",
+  "scripts": {
+    "start": "node --no-warnings server/server.js",
+    "dev": "node --no-warnings --watch server/server.js",
+    "seed": "node --no-warnings server/seed.js",
+    "test": "node --no-warnings --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
