@@ -1,7 +1,18 @@
-import { CONFIG, nowIso, transaction } from './db.js';
+import { getSettings, nowIso, totalFeeRate, transaction } from './db.js';
 import { HttpError, badRequest, forbidden, notFound } from './errors.js';
 import * as lmsr from './lmsr.js';
 import { getUser } from './auth.js';
+import { creditUser, debitUser, platformEntry } from './ledger.js';
+import {
+  addXp,
+  assertNotExcluded,
+  checkTradeMilestones,
+  getProfile,
+  grant,
+  levelFor,
+  notify,
+  trendingVolume,
+} from './engagement.js';
 
 export const CATEGORIES = ['Politics', 'Crypto', 'Sports', 'Tech', 'Economics', 'Culture', 'Science', 'Other'];
 
@@ -35,7 +46,7 @@ export function serializeMarket(db, row, { includeTraders = false } = {}) {
     volume: row.volume,
     tradeCount: row.trade_count,
     liquidity: row.b,
-    feeRate: CONFIG.feeRate,
+    feeRate: totalFeeRate(getSettings(db)),
     creator: creator ? { id: row.creator_id, username: creator.username, avatar: creator.avatar } : null,
     createdAt: row.created_at,
     closesAt: row.closes_at,
@@ -92,13 +103,21 @@ export function listMarkets(db, opts = {}) {
   const sparkStmt = db.prepare(
     "SELECT prices FROM trades WHERE market_id = ? AND side IN ('buy','sell') ORDER BY id DESC LIMIT 40",
   );
-  return rows.map((row) => {
+  const trending = trendingVolume(db);
+  const hotThreshold = Math.max(50, [...trending.values()].map((t) => t.volume).sort((a, b) => b - a)[2] ?? 0);
+  const list = rows.map((row) => {
     const market = serializeMarket(db, row);
     const n = market.outcomes.length;
     const recent = sparkStmt.all(row.id).reverse();
     market.spark = [1 / n, ...recent.map((t) => JSON.parse(t.prices)[0])];
+    const hot = trending.get(row.id);
+    market.volume24h = money(hot?.volume ?? 0);
+    market.trades24h = hot?.trades ?? 0;
+    market.hot = market.status === 'open' && !market.closed && (hot?.volume ?? 0) >= hotThreshold && hotThreshold > 0;
     return market;
   });
+  if (opts.sort === 'hot') list.sort((a, b) => b.volume24h - a.volume24h);
+  return list;
 }
 
 export function marketRowBySlug(db, slug) {
@@ -208,15 +227,20 @@ export function createMarket(db, user, input) {
     throw badRequest('The close date cannot be more than 5 years out.');
   }
 
-  const subsidy = Number(input.subsidy ?? CONFIG.defaultSubsidy);
-  if (!Number.isFinite(subsidy) || subsidy < CONFIG.minSubsidy || subsidy > CONFIG.maxSubsidy) {
-    throw badRequest(`The liquidity subsidy must be between $${CONFIG.minSubsidy} and $${CONFIG.maxSubsidy}.`);
+  const settings = getSettings(db);
+  const subsidy = Number(input.subsidy ?? settings.defaultSubsidy);
+  if (!Number.isFinite(subsidy) || subsidy < settings.minSubsidy || subsidy > settings.maxSubsidy) {
+    throw badRequest(`The liquidity subsidy must be between $${settings.minSubsidy} and $${settings.maxSubsidy}.`);
   }
+  const listingFee = settings.listingFee;
 
   return transaction(db, () => {
-    const fresh = db.prepare('SELECT balance FROM users WHERE id = ?').get(user.id);
-    if (!fresh || fresh.balance < subsidy) {
-      throw badRequest(`You need $${subsidy.toFixed(2)} to subsidise this market; your balance is $${(fresh?.balance ?? 0).toFixed(2)}.`);
+    assertNotExcluded(db, user.id);
+    const fresh = db.prepare('SELECT balance, bonus_balance FROM users WHERE id = ?').get(user.id);
+    const available = (fresh?.balance ?? 0) + (fresh?.bonus_balance ?? 0);
+    const required = subsidy + listingFee;
+    if (available < required) {
+      throw badRequest(`You need $${required.toFixed(2)} to open this market; your balance is $${available.toFixed(2)}.`);
     }
     const b = lmsr.liquidityForSubsidy(subsidy, outcomes.length);
     const slug = uniqueSlug(db, slugify(question));
@@ -240,8 +264,14 @@ export function createMarket(db, user, input) {
         nowIso(),
         closesAt.toISOString(),
       );
-    db.prepare('UPDATE users SET balance = balance - ? WHERE id = ?').run(money(subsidy), user.id);
-    return serializeMarket(db, marketRowById(db, Number(info.lastInsertRowid)));
+    const marketId = Number(info.lastInsertRowid);
+    debitUser(db, user.id, money(subsidy), { kind: 'subsidy', marketId, memo: 'Liquidity posted' });
+    if (listingFee > 0) {
+      debitUser(db, user.id, money(listingFee), { kind: 'listing_fee', marketId, memo: 'Market listing fee' });
+      platformEntry(db, money(listingFee), { kind: 'listing_fee', userId: user.id, marketId, memo: 'Market listing fee' });
+    }
+    grant(db, user.id, 'market_maker');
+    return serializeMarket(db, marketRowById(db, marketId));
   });
 }
 
@@ -264,7 +294,7 @@ function parseTradeInput(db, row, userId, input) {
       const budget = Number(input.budget);
       if (!Number.isFinite(budget) || budget <= 0) throw badRequest('Enter an amount greater than zero.');
       if (budget > 1e9) throw badRequest('That amount is too large.');
-      size = lmsr.sharesForBudget(q, row.b, outcome, budget / (1 + CONFIG.feeRate));
+      size = lmsr.sharesForBudget(q, row.b, outcome, budget / (1 + totalFeeRate(getSettings(db))));
     } else {
       size = Number(input.shares);
       if (!Number.isFinite(size) || size <= 0) throw badRequest('Enter a share count greater than zero.');
@@ -289,7 +319,7 @@ function parseTradeInput(db, row, userId, input) {
 export function quoteTrade(db, marketId, input, userId = null) {
   const row = marketRowById(db, marketId);
   const { outcome, side, size, q, labels } = parseTradeInput(db, row, userId, input);
-  const quote = lmsr.quote(q, row.b, outcome, side, size, CONFIG.feeRate);
+  const quote = lmsr.quote(q, row.b, outcome, side, size, totalFeeRate(getSettings(db)));
   return {
     side,
     outcome,
@@ -316,10 +346,12 @@ export function executeTrade(db, user, marketId, input) {
     if (row.status !== 'open') throw badRequest('This market has already been settled.');
     if (new Date(row.closes_at).getTime() <= Date.now()) throw badRequest('This market is closed for trading.');
 
+    assertNotExcluded(db, user.id);
     const { outcome, side, size, q, labels } = parseTradeInput(db, row, user.id, input);
     if (size <= 0) throw badRequest('That trade rounds to zero shares.');
 
-    const quote = lmsr.quote(q, row.b, outcome, side, size, CONFIG.feeRate);
+    const settings = getSettings(db);
+    const quote = lmsr.quote(q, row.b, outcome, side, size, totalFeeRate(settings));
     const cashDelta = money(quote.cashDelta); // > 0 when buying, < 0 when selling
     const fee = money(quote.fee);
     const notional = money(Math.abs(quote.cost));
@@ -339,10 +371,16 @@ export function executeTrade(db, user, marketId, input) {
       }
     }
 
-    const fresh = db.prepare('SELECT balance FROM users WHERE id = ?').get(user.id);
-    if (side === 'buy' && fresh.balance < cashDelta - 1e-9) {
-      throw badRequest(`Not enough balance: this costs $${cashDelta.toFixed(2)} and you have $${fresh.balance.toFixed(2)}.`);
+    const fresh = db.prepare('SELECT balance, bonus_balance FROM users WHERE id = ?').get(user.id);
+    const available = money(fresh.balance + fresh.bonus_balance);
+    if (side === 'buy' && available < cashDelta - 1e-9) {
+      throw badRequest(`Not enough balance: this costs $${cashDelta.toFixed(2)} and you have $${available.toFixed(2)}.`);
     }
+
+    // Split the fee between the house and the market's creator.
+    const share = totalFeeRate(settings) > 0 ? settings.platformFeeRate / totalFeeRate(settings) : 0;
+    const platformFee = money(fee * share);
+    const creatorFee = money(fee - platformFee);
 
     // Position accounting.
     const posRow =
@@ -382,13 +420,25 @@ export function executeTrade(db, user, marketId, input) {
       );
     }
 
-    db.prepare('UPDATE users SET balance = balance - ?, realized_pnl = realized_pnl + ? WHERE id = ?').run(
-      cashDelta,
-      realized,
-      user.id,
-    );
-    // Trading fees go to whoever created the market.
-    if (fee > 0) db.prepare('UPDATE users SET balance = balance + ? WHERE id = ?').run(fee, row.creator_id);
+    // Money movement, every leg booked to the ledger.
+    if (cashDelta > 0) {
+      debitUser(db, user.id, cashDelta, { kind: 'trade_buy', marketId: row.id, memo: `Buy ${labels[outcome]}` });
+    } else if (cashDelta < 0) {
+      creditUser(db, user.id, -cashDelta, { kind: 'trade_sell', marketId: row.id, memo: `Sell ${labels[outcome]}` });
+    }
+    db.prepare('UPDATE users SET realized_pnl = realized_pnl + ? WHERE id = ?').run(realized, user.id);
+
+    if (platformFee > 0) {
+      platformEntry(db, platformFee, { kind: 'trading_fee', userId: user.id, marketId: row.id, memo: 'Platform trading fee' });
+    }
+    if (creatorFee > 0) {
+      creditUser(db, row.creator_id, creatorFee, { kind: 'creator_fee', marketId: row.id, memo: 'Creator trading fee' });
+    }
+
+    // Engagement: turnover drives XP, levels, achievements and the wagering
+    // requirement that gates withdrawals of bonus money.
+    db.prepare('UPDATE profiles SET wagered = wagered + ? WHERE user_id = ?').run(notional, user.id);
+    addXp(db, user.id, notional);
 
     const nextQ = quote.q.map(shares);
     db.prepare(
@@ -412,9 +462,12 @@ export function executeTrade(db, user, marketId, input) {
       nowIso(),
     );
 
+    const unlocked = checkTradeMilestones(db, user.id);
+
     return {
       market: serializeMarket(db, marketRowById(db, row.id)),
       user: getUser(db, user.id),
+      unlocked,
       fill: {
         side,
         outcome,
@@ -422,6 +475,8 @@ export function executeTrade(db, user, marketId, input) {
         shares: shares(size),
         cost: Math.abs(cashDelta),
         fee,
+        platformFee,
+        creatorFee,
         avgPrice,
         realized,
       },
@@ -460,15 +515,23 @@ export function resolveMarket(db, user, marketId, outcome) {
     const positions = db.prepare('SELECT * FROM positions WHERE market_id = ?').all(row.id);
     let totalPayout = 0;
     const at = nowIso();
+    const perUser = new Map();
     for (const pos of positions) {
       const payout = money(pos.shares * finalPrices[pos.outcome]);
       const realized = money(payout - pos.cost_basis);
       totalPayout += payout;
-      db.prepare('UPDATE users SET balance = balance + ?, realized_pnl = realized_pnl + ? WHERE id = ?').run(
-        payout,
-        realized,
-        pos.user_id,
-      );
+      if (payout > 0) {
+        creditUser(db, pos.user_id, payout, {
+          kind: cancelled ? 'refund' : 'payout',
+          marketId: row.id,
+          memo: cancelled ? 'Market cancelled' : `Settled ${labels[pos.outcome]}`,
+        });
+      }
+      db.prepare('UPDATE users SET realized_pnl = realized_pnl + ? WHERE id = ?').run(realized, pos.user_id);
+      const tally = perUser.get(pos.user_id) ?? { payout: 0, realized: 0 };
+      tally.payout += payout;
+      tally.realized += realized;
+      perUser.set(pos.user_id, tally);
       db.prepare(
         `INSERT INTO trades (market_id, user_id, outcome, side, shares, cost, fee, avg_price, prices, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -487,10 +550,44 @@ export function resolveMarket(db, user, marketId, outcome) {
     }
     db.prepare('DELETE FROM positions WHERE market_id = ?').run(row.id);
 
+    // Tell everyone how they did — this is what pulls people back in.
+    for (const [userId, tally] of perUser) {
+      const won = tally.realized >= 0;
+      db.prepare(`UPDATE profiles SET wins = wins + ?, losses = losses + ? WHERE user_id = ?`).run(
+        won ? 1 : 0,
+        won ? 0 : 1,
+        userId,
+      );
+      if (won && !cancelled) grant(db, userId, 'first_win');
+      notify(db, userId, {
+        kind: won ? 'win' : 'loss',
+        title: cancelled
+          ? 'Market cancelled'
+          : won
+            ? `You won $${money(tally.payout).toFixed(2)}`
+            : 'Market settled against you',
+        body: `${row.question} — settled ${cancelled ? 'as cancelled' : labels[winner]}.`,
+        href: `#/market/${row.slug}`,
+        amount: money(tally.realized),
+      });
+    }
+
     // The creator gets their subsidy back, plus whatever the AMM took in and
     // did not have to pay out (this can be a loss, bounded by the subsidy).
     const creatorReturn = money(row.subsidy + row.collected - totalPayout);
-    db.prepare('UPDATE users SET balance = balance + ? WHERE id = ?').run(creatorReturn, row.creator_id);
+    if (creatorReturn > 0) {
+      creditUser(db, row.creator_id, creatorReturn, {
+        kind: 'subsidy_return',
+        marketId: row.id,
+        memo: 'Liquidity returned at settlement',
+      });
+    } else if (creatorReturn < 0) {
+      debitUser(db, row.creator_id, -creatorReturn, {
+        kind: 'subsidy_return',
+        marketId: row.id,
+        memo: 'Market maker shortfall',
+      });
+    }
 
     db.prepare('UPDATE markets SET status = ?, resolved_outcome = ?, resolved_at = ? WHERE id = ?').run(
       cancelled ? 'cancelled' : 'resolved',
@@ -574,19 +671,28 @@ export function portfolio(db, userId) {
     .map((t) => ({ ...serializeTrade({ ...t, username: user.username, avatar: user.avatar }) }));
 
   const equity = creatorEquity(db, userId);
+  const profile = getProfile(db, userId);
+  const netWorth = money(user.balance + value + equity);
+  // What the account has actually been funded with: deposits and promo credit,
+  // less anything already taken out. Profit is everything above that line.
+  const funded = money(profile.deposited + profile.bonusGranted - profile.withdrawn);
   return {
     user,
     positions,
     history,
+    profile,
     summary: {
       balance: money(user.balance),
+      cash: money(user.cashBalance),
+      bonus: money(user.bonusBalance),
       invested: money(invested),
       positionValue: money(value),
       creatorEquity: equity,
-      netWorth: money(user.balance + value + equity),
+      netWorth,
+      funded,
       unrealized: money(value - invested),
       realized: money(user.realizedPnl),
-      profit: money(user.balance + value + equity - CONFIG.startingBalance),
+      profit: money(netWorth - funded),
     },
   };
 }
@@ -595,7 +701,12 @@ export function leaderboard(db, limit = 50) {
   const markets = new Map(
     db.prepare("SELECT id, q, b FROM markets").all().map((m) => [m.id, lmsr.prices(JSON.parse(m.q), m.b)]),
   );
-  const users = db.prepare('SELECT * FROM users ORDER BY id').all();
+  const users = db
+    .prepare(
+      `SELECT u.*, p.deposited, p.bonus_granted, p.withdrawn, p.xp, p.streak, p.wins, p.losses
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id ORDER BY u.id`,
+    )
+    .all();
   const positions = db.prepare('SELECT * FROM positions').all();
   const valueByUser = new Map();
   for (const p of positions) {
@@ -606,15 +717,25 @@ export function leaderboard(db, limit = 50) {
     .map((u) => {
       const value = valueByUser.get(u.id) ?? 0;
       const equity = creatorEquity(db, u.id);
+      const balance = u.balance + (u.bonus_balance ?? 0);
+      const netWorth = money(balance + value + equity);
+      const funded = money((u.deposited ?? 0) + (u.bonus_granted ?? 0) - (u.withdrawn ?? 0));
       return {
         id: u.id,
         username: u.username,
         avatar: u.avatar,
-        balance: money(u.balance),
+        balance: money(balance),
         positionValue: money(value),
         creatorEquity: equity,
-        netWorth: money(u.balance + value + equity),
-        profit: money(u.balance + value + equity - CONFIG.startingBalance),
+        netWorth,
+        level: levelFor(u.xp ?? 0),
+        streak: u.streak ?? 0,
+        wins: u.wins ?? 0,
+        losses: u.losses ?? 0,
+        /** Return on what the account was funded with, so whales and small
+         *  accounts can be compared on the same axis. */
+        roi: funded > 0 ? (netWorth - funded) / funded : 0,
+        profit: money(netWorth - funded),
         realized: money(u.realized_pnl),
         marketsCreated: db.prepare('SELECT COUNT(*) AS n FROM markets WHERE creator_id = ?').get(u.id).n,
         trades: db.prepare('SELECT COUNT(*) AS n FROM trades WHERE user_id = ? AND side != ?').get(u.id, 'settle').n,

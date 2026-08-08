@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { after, before } from 'node:test';
-import { openDb, CONFIG } from '../server/db.js';
+import { openDb, DEFAULT_SETTINGS, getSettings } from '../server/db.js';
 import { createServer } from '../server/server.js';
 import * as lmsr from '../server/lmsr.js';
+import { signWebhook } from '../server/payments.js';
 
 let server;
 let base;
@@ -43,6 +44,23 @@ const signup = async (username, password = 'password123') => {
 
 const inAMonth = () => new Date(Date.now() + 30 * 86400_000).toISOString();
 
+/** Current platform revenue, straight out of the ledger. */
+const treasury = () =>
+  db.prepare("SELECT COALESCE(SUM(amount),0) AS t FROM ledger WHERE account = 'platform'").get().t;
+
+/** Complete a sandbox deposit end to end. */
+async function deposit(token, amount) {
+  const created = await call('/api/wallet/deposit', { method: 'POST', body: { amount }, token });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  const done = await call('/api/wallet/deposit/confirm', {
+    method: 'POST',
+    body: { reference: created.body.reference },
+    token,
+  });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  return { ...created.body, user: done.body.user };
+}
+
 async function newMarket(token, overrides = {}) {
   const res = await call('/api/markets', {
     method: 'POST',
@@ -66,7 +84,7 @@ async function newMarket(token, overrides = {}) {
 test('signup issues a token and a starting balance', async () => {
   const { user, token } = await signup('alice');
   assert.equal(user.username, 'alice');
-  assert.equal(user.balance, CONFIG.startingBalance);
+  assert.equal(user.balance, DEFAULT_SETTINGS.welcomeBonus);
   assert.match(token, /^[a-f0-9]{64}$/);
 
   const me = await call('/api/me', { token });
@@ -103,7 +121,7 @@ test('creating a market deducts the subsidy and starts at even odds', async () =
   assert.ok(Math.abs(lmsr.maxLoss(market.b, 2) - 100) < 1e-9);
 
   const me = await call('/api/me', { token });
-  assert.equal(me.body.user.balance, CONFIG.startingBalance - 100);
+  assert.equal(me.body.user.balance, DEFAULT_SETTINGS.welcomeBonus - 100);
 });
 
 test('market creation validates its input', async () => {
@@ -154,10 +172,11 @@ test('buying moves the price, debits cash and credits shares', async () => {
   assert.ok(Math.abs(detail.body.positions[0].shares - fill.shares) < 1e-6);
 });
 
-test('the fee is paid to the market creator', async () => {
+test('the trading fee is split between the platform and the creator', async () => {
   const { token: creatorToken } = await signup('mm2');
   const market = await newMarket(creatorToken, { question: 'Does the creator earn the trading fee?' });
   const before = (await call('/api/me', { token: creatorToken })).body.user.balance;
+  const treasuryBefore = treasury();
 
   const { token } = await signup('buyer2');
   const res = await call(`/api/markets/${market.slug}/trade`, {
@@ -165,9 +184,18 @@ test('the fee is paid to the market creator', async () => {
     body: { outcome: 1, side: 'buy', budget: 100 },
     token,
   });
+  const { fee, platformFee, creatorFee } = res.body.fill;
+  assert.ok(fee > 0);
+  assert.ok(Math.abs(platformFee + creatorFee - fee) < 1e-6, 'the split adds back up to the whole fee');
+
   const after = (await call('/api/me', { token: creatorToken })).body.user.balance;
-  assert.ok(Math.abs(after - before - res.body.fill.fee) < 1e-6);
-  assert.ok(res.body.fill.fee > 0);
+  assert.ok(Math.abs(after - before - creatorFee) < 1e-6, 'the creator gets exactly their share');
+  assert.ok(Math.abs(treasury() - treasuryBefore - platformFee) < 1e-6, 'the house banks the rest');
+
+  // And the split matches the configured rates (fees are stored to 4dp).
+  const settings = getSettings(db);
+  const expectedShare = settings.platformFeeRate / (settings.platformFeeRate + settings.creatorFeeRate);
+  assert.ok(Math.abs(platformFee / fee - expectedShare) < 1e-3, `share was ${platformFee / fee}, expected ~${expectedShare}`);
 });
 
 test('selling returns cash and realises profit or loss', async () => {
@@ -293,8 +321,8 @@ test('settling pays winners $1 a share and expires losers', async () => {
 
   const winnerBalance = (await call('/api/me', { token: winnerToken })).body.user.balance;
   const loserBalance = (await call('/api/me', { token: loserToken })).body.user.balance;
-  assert.ok(Math.abs(winnerBalance - (CONFIG.startingBalance - 80 + win.body.fill.shares)) < 0.01);
-  assert.ok(Math.abs(loserBalance - (CONFIG.startingBalance - 80)) < 0.01, 'the loser keeps nothing');
+  assert.ok(Math.abs(winnerBalance - (DEFAULT_SETTINGS.welcomeBonus - 80 + win.body.fill.shares)) < 0.01);
+  assert.ok(Math.abs(loserBalance - (DEFAULT_SETTINGS.welcomeBonus - 80)) < 0.01, 'the loser keeps nothing');
   assert.ok(lose.body.fill.shares > 0);
 
   // The creator gets the subsidy back, adjusted by the market maker's result.
@@ -339,7 +367,7 @@ test('cancelling a market refunds holders at the current price', async () => {
   assert.equal(res.body.market.status, 'cancelled');
   const balance = (await call('/api/me', { token })).body.user.balance;
   // Refunded at market price, so most of the $40 comes back (minus fee and spread).
-  assert.ok(balance > CONFIG.startingBalance - 5, `expected a near-full refund, balance was ${balance}`);
+  assert.ok(balance > DEFAULT_SETTINGS.welcomeBonus - 5, `expected a near-full refund, balance was ${balance}`);
 });
 
 /* ------------------- multi-outcome, portfolio, social ----------------- */
@@ -405,7 +433,7 @@ test('the leaderboard ranks by net worth', async () => {
 /* ------------------------- system-wide invariant ---------------------- */
 
 test('play money is conserved across every account and market', () => {
-  const users = db.prepare('SELECT id, balance FROM users').all();
+  const users = db.prepare('SELECT id, balance + bonus_balance AS balance FROM users').all();
   const markets = db.prepare("SELECT id, q, b, subsidy, collected, status FROM markets").all();
   const positions = db.prepare('SELECT * FROM positions').all();
 
@@ -418,8 +446,18 @@ test('play money is conserved across every account and market', () => {
     const prices = priceCache.get(m.id);
     total += m.subsidy + m.collected - q.reduce((sum, x, i) => sum + x * prices[i], 0);
   }
-  const expected = users.length * CONFIG.startingBalance;
-  assert.ok(Math.abs(total - expected) < 0.05, `system holds ${total.toFixed(4)}, expected ${expected}`);
+  // Add the treasury, and account for money that entered or left via payments.
+  total += db.prepare("SELECT COALESCE(SUM(amount),0) AS t FROM ledger WHERE account = 'platform'").get().t;
+  const deposited = db.prepare("SELECT COALESCE(SUM(amount),0) AS t FROM payment_intents WHERE status = 'succeeded'").get().t;
+  const withdrawn = db.prepare("SELECT COALESCE(SUM(amount),0) AS t FROM withdrawals WHERE status != 'rejected'").get().t;
+  const bonuses = db
+    .prepare("SELECT COALESCE(SUM(amount),0) AS t FROM ledger WHERE account = 'bonus' AND amount > 0")
+    .get().t;
+  const expected = bonuses + deposited - withdrawn;
+  assert.ok(
+    Math.abs(total - expected) < 0.05,
+    `system holds ${total.toFixed(4)}, expected ${expected.toFixed(4)}`,
+  );
 });
 
 /* ------------------------------ transport ---------------------------- */
@@ -441,4 +479,266 @@ test('the single-page app is served for unknown non-API paths', async () => {
   assert.match(res.headers.get('content-type'), /text\/html/);
   const traversal = await fetch(`${base}/../server/db.js`);
   assert.ok(traversal.status === 404 || traversal.status === 403);
+});
+
+/* ------------------------- payments and revenue ---------------------- */
+
+test('a deposit credits withdrawable cash exactly once', async () => {
+  const { token } = await signup('depositor');
+  const before = (await call('/api/me', { token })).body.user.balance;
+
+  const created = await call('/api/wallet/deposit', { method: 'POST', body: { amount: 200 }, token });
+  assert.equal(created.status, 200);
+  assert.match(created.body.checkoutUrl, /^\/checkout\?ref=/);
+
+  const first = await call('/api/wallet/deposit/confirm', { method: 'POST', body: { reference: created.body.reference }, token });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.credited, 200);
+  assert.ok(Math.abs(first.body.user.balance - (before + 200)) < 1e-6);
+  assert.ok(Math.abs(first.body.user.cashBalance - 200) < 1e-6, 'deposits land in cash, not bonus');
+
+  // Replaying the confirmation must not credit a second time.
+  const replay = await call('/api/wallet/deposit/confirm', { method: 'POST', body: { reference: created.body.reference }, token });
+  assert.equal(replay.body.alreadyProcessed, true);
+  const after = (await call('/api/me', { token })).body.user.balance;
+  assert.ok(Math.abs(after - (before + 200)) < 1e-6, 'balance unchanged by the replay');
+});
+
+test('deposits validate amount, limits and ownership', async () => {
+  const { token } = await signup('deplimits');
+  assert.equal((await call('/api/wallet/deposit', { method: 'POST', body: { amount: 1 }, token })).status, 400);
+  assert.equal((await call('/api/wallet/deposit', { method: 'POST', body: { amount: 1e9 }, token })).status, 400);
+  assert.equal((await call('/api/wallet/deposit', { method: 'POST', body: { amount: 50 } })).status, 401);
+
+  await call('/api/limits', { method: 'POST', body: { depositLimit: 60 }, token });
+  await deposit(token, 50);
+  const overLimit = await call('/api/wallet/deposit', { method: 'POST', body: { amount: 50 }, token });
+  assert.equal(overLimit.status, 400);
+  assert.match(overLimit.body.error, /deposit limit/i);
+
+  // Another account cannot confirm someone else's payment.
+  const mine = await call('/api/wallet/deposit', { method: 'POST', body: { amount: 25 }, token: (await signup('depother')).token });
+  const stolen = await call('/api/wallet/deposit/confirm', { method: 'POST', body: { reference: mine.body.reference }, token });
+  assert.equal(stolen.status, 403);
+});
+
+test('the webhook is signature-checked and idempotent', async () => {
+  const { token } = await signup('hooked');
+  const created = await call('/api/wallet/deposit', { method: 'POST', body: { amount: 120 }, token });
+  const payload = JSON.stringify({ reference: created.body.reference, status: 'succeeded' });
+
+  const unsigned = await fetch(`${base}/api/payments/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: payload,
+  });
+  assert.equal(unsigned.status, 401, 'an unsigned webhook is rejected');
+
+  const send = () =>
+    fetch(`${base}/api/payments/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-signature': signWebhook(payload) },
+      body: payload,
+    });
+  assert.equal((await send()).status, 200);
+  const balance = (await call('/api/me', { token })).body.user.balance;
+  const second = await (await send()).json();
+  assert.equal(second.alreadyProcessed, true);
+  assert.equal((await call('/api/me', { token })).body.user.balance, balance, 'no double credit');
+});
+
+test('withdrawals are gated by the bonus wagering requirement', async () => {
+  const { token } = await signup('cashout');
+  await deposit(token, 300);
+
+  // The welcome bonus has not been turned over yet, so cash is locked.
+  const blocked = await call('/api/wallet/withdraw', { method: 'POST', body: { amount: 100, destination: 'DE00 1234' }, token });
+  assert.equal(blocked.status, 400);
+  assert.match(blocked.body.error, /volume/i);
+
+  const wallet = await call('/api/wallet', { token });
+  assert.equal(wallet.body.withdrawable, 0);
+  assert.ok(wallet.body.wageringRemaining > 0);
+});
+
+test('a withdrawal debits immediately and an admin can approve or reject it', async () => {
+  const { token: adminToken } = await signup('boss');
+  db.prepare('UPDATE users SET is_admin = 1 WHERE username = ?').run('boss');
+
+  const { token } = await signup('withdrawer');
+  await deposit(token, 400);
+  // Clear the wagering requirement so the cash unlocks.
+  db.prepare('UPDATE profiles SET wagered = 999999 WHERE user_id = (SELECT id FROM users WHERE username = ?)').run('withdrawer');
+
+  const before = (await call('/api/me', { token })).body.user.balance;
+  const requested = await call('/api/wallet/withdraw', { method: 'POST', body: { amount: 150, destination: 'DE00 1234 5678' }, token });
+  assert.equal(requested.status, 200, JSON.stringify(requested.body));
+  const after = (await call('/api/me', { token })).body.user.balance;
+  assert.ok(Math.abs(after - (before - 150)) < 1e-6, 'the money is held the moment it is requested');
+
+  assert.equal((await call('/api/admin/withdrawals', { token })).status, 403, 'not an admin');
+  const queue = await call('/api/admin/withdrawals', { token: adminToken });
+  assert.ok(queue.body.withdrawals.some((w) => w.id === requested.body.withdrawal.id));
+
+  const approved = await call(`/api/admin/withdrawals/${requested.body.withdrawal.id}`, {
+    method: 'POST',
+    body: { approve: true },
+    token: adminToken,
+  });
+  assert.equal(approved.body.status, 'paid');
+  assert.equal((await call('/api/me', { token })).body.user.balance, after, 'an approved payout does not come back');
+
+  // A rejected one is refunded in full.
+  const second = await call('/api/wallet/withdraw', { method: 'POST', body: { amount: 100, destination: 'DE00 9999' }, token });
+  const rejected = await call(`/api/admin/withdrawals/${second.body.withdrawal.id}`, {
+    method: 'POST',
+    body: { approve: false, note: 'Verification needed' },
+    token: adminToken,
+  });
+  assert.equal(rejected.body.status, 'rejected');
+  const refunded = (await call('/api/me', { token })).body.user.balance;
+  assert.ok(Math.abs(refunded - after) < 1e-6, 'the money came back');
+});
+
+test('an admin can retune the fees and the next trade uses them', async () => {
+  const { token: adminToken } = await signup('economist');
+  db.prepare('UPDATE users SET is_admin = 1 WHERE username = ?').run('economist');
+  const market = await newMarket(adminToken, { question: 'Do new fee settings take effect at once?' });
+  const { token } = await signup('feepayer');
+
+  await call('/api/admin/settings', { method: 'POST', body: { platformFeeRate: 0.05, creatorFeeRate: 0 }, token: adminToken });
+  const treasuryBefore = treasury();
+  const res = await call(`/api/markets/${market.slug}/trade`, { method: 'POST', body: { outcome: 0, side: 'buy', budget: 100 }, token });
+
+  assert.ok(res.body.fill.platformFee > 0);
+  assert.equal(res.body.fill.creatorFee, 0, 'creators get nothing at a 0% creator rate');
+  assert.ok(Math.abs(treasury() - treasuryBefore - res.body.fill.platformFee) < 1e-6);
+  assert.ok(res.body.fill.platformFee / res.body.fill.cost > 0.04, 'a 5% fee is actually charged');
+
+  assert.equal((await call('/api/admin/settings', { method: 'POST', body: { platformFeeRate: 0.5 } })).status, 401);
+  // Put the rates back so later tests see the defaults.
+  await call('/api/admin/settings', {
+    method: 'POST',
+    body: { platformFeeRate: DEFAULT_SETTINGS.platformFeeRate, creatorFeeRate: DEFAULT_SETTINGS.creatorFeeRate },
+    token: adminToken,
+  });
+});
+
+test('the admin overview reports revenue and liabilities', async () => {
+  const { token } = await signup('overseer');
+  db.prepare('UPDATE users SET is_admin = 1 WHERE username = ?').run('overseer');
+  const { body } = await call('/api/admin/overview', { token });
+  assert.ok(body.treasury > 0, 'the house has earned something by now');
+  assert.ok(body.revenueByKind.some((r) => r.kind === 'trading_fee'));
+  assert.ok(body.liabilities > 0);
+  assert.ok(body.deposits.total > 0);
+  assert.ok(Array.isArray(body.revenueByDay));
+});
+
+/* ---------------------------- engagement ----------------------------- */
+
+test('the daily bonus pays once a day and builds a streak', async () => {
+  const { token } = await signup('streaker');
+  const before = (await call('/api/me', { token })).body.user.balance;
+
+  const first = await call('/api/bonus/claim', { method: 'POST', token });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.streak, 1);
+  assert.ok(first.body.amount > 0);
+  assert.ok(Math.abs(first.body.user.balance - (before + first.body.amount)) < 1e-6);
+  assert.ok(first.body.user.bonusBalance > 0, 'bonus credit, not cash');
+
+  const again = await call('/api/bonus/claim', { method: 'POST', token });
+  assert.equal(again.status, 400, 'only one claim a day');
+
+  // Backdate the claim to yesterday and the streak should continue at 2.
+  const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+  db.prepare('UPDATE profiles SET last_bonus_day = ? WHERE user_id = (SELECT id FROM users WHERE username = ?)').run(yesterday, 'streaker');
+  const second = await call('/api/bonus/claim', { method: 'POST', token });
+  assert.equal(second.body.streak, 2);
+  assert.ok(second.body.amount > first.body.amount, 'a longer streak pays more');
+});
+
+test('referral links pay both sides', async () => {
+  const { token: inviterToken, user: inviter } = await signup('inviter');
+  const { body: stats } = await call('/api/referrals', { token: inviterToken });
+  assert.match(stats.code, /^[0-9A-F]{8}$/);
+
+  const invited = await call('/api/auth/signup', {
+    method: 'POST',
+    body: { username: 'invitee', password: 'password123', referralCode: stats.code },
+  });
+  assert.equal(invited.status, 200);
+
+  const settings = getSettings(db);
+  const inviterAfter = (await call('/api/me', { token: inviterToken })).body.user.balance;
+  assert.ok(Math.abs(inviterAfter - (inviter.balance + settings.referralBonus)) < 1e-6);
+  assert.ok(invited.body.user.balance > settings.welcomeBonus, 'the new account got the extra too');
+
+  const after = await call('/api/referrals', { token: inviterToken });
+  assert.equal(after.body.invited, 1);
+  assert.equal(after.body.earned, settings.referralBonus);
+});
+
+test('trading earns XP, levels and achievements', async () => {
+  const { token: creatorToken } = await signup('xpmaker');
+  const market = await newMarket(creatorToken, { question: 'Does trading actually award experience?' });
+  const { token } = await signup('grinder');
+
+  const res = await call(`/api/markets/${market.slug}/trade`, { method: 'POST', body: { outcome: 0, side: 'buy', budget: 300 }, token });
+  assert.ok(res.body.unlocked.some((a) => a.key === 'first_trade'), 'first trade is celebrated');
+
+  const me = (await call('/api/me', { token })).body.user;
+  assert.ok(me.xp > 0);
+  assert.ok(me.level.level >= 1 && me.level.name);
+
+  const { body } = await call('/api/achievements', { token });
+  assert.ok(body.achievements.find((a) => a.key === 'first_trade').earned);
+  assert.ok(!body.achievements.find((a) => a.key === 'volume_10k').earned);
+  // The creator earned theirs for opening a market.
+  const creatorAchievements = await call('/api/achievements', { token: creatorToken });
+  assert.ok(creatorAchievements.body.achievements.find((a) => a.key === 'market_maker').earned);
+});
+
+test('settling a market notifies winners and losers', async () => {
+  const { token: creatorToken } = await signup('notifier');
+  const market = await newMarket(creatorToken, { question: 'Does settlement send a notification?' });
+  const { token: winnerToken } = await signup('notified');
+
+  await call(`/api/markets/${market.slug}/trade`, { method: 'POST', body: { outcome: 0, side: 'buy', budget: 40 }, token: winnerToken });
+  await call(`/api/markets/${market.slug}/resolve`, { method: 'POST', body: { outcome: 0 }, token: creatorToken });
+
+  const { body } = await call('/api/notifications', { token: winnerToken });
+  assert.ok(body.unread > 0);
+  const win = body.items.find((n) => n.kind === 'win');
+  assert.ok(win, 'the winner is told they won');
+  assert.match(win.title, /You won/);
+
+  await call('/api/notifications/read', { method: 'POST', token: winnerToken });
+  assert.equal((await call('/api/notifications', { token: winnerToken })).body.unread, 0);
+});
+
+test('self-exclusion blocks trading and deposits', async () => {
+  const { token: creatorToken } = await signup('gatekeeper');
+  const market = await newMarket(creatorToken, { question: 'Does self-exclusion stop a trade?' });
+  const { token } = await signup('needsabreak');
+
+  await call('/api/limits', { method: 'POST', body: { excludeDays: 7 }, token });
+  const trade = await call(`/api/markets/${market.slug}/trade`, { method: 'POST', body: { outcome: 0, side: 'buy', budget: 10 }, token });
+  assert.equal(trade.status, 400);
+  assert.match(trade.body.error, /self-excluded/i);
+  assert.equal((await call('/api/wallet/deposit', { method: 'POST', body: { amount: 50 }, token })).status, 403);
+  assert.equal((await call('/api/bonus/claim', { method: 'POST', token })).status, 400);
+});
+
+test('the live ticker and platform stats are public', async () => {
+  const activity = await call('/api/activity');
+  assert.ok(activity.body.activity.length > 0);
+  const first = activity.body.activity[0];
+  assert.ok(first.market.slug && first.user.username && first.outcomeLabel);
+  assert.ok(['buy', 'sell'].includes(first.side), 'settlements are not shown as trades');
+
+  const stats = await call('/api/stats');
+  assert.ok(stats.body.totalVolume > 0);
+  assert.ok(stats.body.traders > 0);
 });

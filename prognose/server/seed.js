@@ -1,6 +1,7 @@
-import { openDb, defaultDbPath } from './db.js';
+import { openDb, defaultDbPath, nowIso } from './db.js';
 import { createUser } from './auth.js';
-import { createMarket, executeTrade, resolveMarket, addComment, marketRowById } from './logic.js';
+import { createMarket, executeTrade, resolveMarket, addComment } from './logic.js';
+import { settleDeposit } from './payments.js';
 
 /** Deterministic PRNG so the demo data looks the same every time. */
 function rng(seedValue) {
@@ -121,6 +122,18 @@ export function seed(db) {
   const users = new Map();
   for (const u of DEMO_USERS) users.set(u.username, createUser(db, u.username, u.password, { isAdmin: u.isAdmin }));
 
+  // A couple of completed deposits so the wallet and the revenue dashboard
+  // have something real to show on first run.
+  for (const [name, amount] of [['alice', 250], ['bob', 500], ['dave', 100]]) {
+    const user = users.get(name);
+    const reference = `dep_seed_${name}`;
+    db.prepare(
+      `INSERT INTO payment_intents (reference, user_id, amount, provider, status, checkout_url, provider_ref, created_at)
+       VALUES (?, ?, ?, 'mock', 'pending', '', ?, ?)`,
+    ).run(reference, user.id, amount, `mock_${reference}`, nowIso());
+    settleDeposit(db, reference);
+  }
+
   const random = rng(20260808);
   const created = [];
   for (const spec of DEMO_MARKETS) {
@@ -149,16 +162,33 @@ export function seed(db) {
   db.prepare('UPDATE markets SET created_at = ? WHERE id = ?').run(days(-60), past.id);
 
   const traders = ['alice', 'bob', 'carol', 'dave'].map((n) => users.get(n));
+
+  /**
+   * Run `count` trades on a market and backdate each one — the trade row and
+   * every ledger entry it produced — so charts and revenue have a real shape.
+   * Trades are skewed towards the present so "last 24h" is never empty.
+   */
   const tradeOn = (market, count) => {
+    const start = Date.parse(db.prepare('SELECT created_at FROM markets WHERE id = ?').get(market.id).created_at);
+    const end = Date.now() - 60_000;
     for (let i = 0; i < count; i++) {
       const trader = traders[Math.floor(random() * traders.length)];
       const outcome = Math.floor(random() * market.outcomes.length);
       const budget = Math.round((3 + random() * 45) * 100) / 100;
+      // The tail of every market lands inside the last day, so "24h volume"
+      // and the live ticker are never empty on a fresh install.
+      const recent = i >= count - 3;
+      const at = recent
+        ? new Date(end - random() * 20 * 3600_000).toISOString()
+        : new Date(start + (end - start) * ((i + 1) / (count + 1)) ** 0.75).toISOString();
+      const ledgerMark = db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM ledger').get().id;
       try {
         executeTrade(db, trader, market.id, { outcome, side: 'buy', budget });
       } catch {
-        /* a trader ran out of play money — skip this one */
+        continue; // a trader ran out of balance
       }
+      db.prepare('UPDATE trades SET created_at = ? WHERE id = (SELECT MAX(id) FROM trades)').run(at);
+      db.prepare('UPDATE ledger SET created_at = ? WHERE id > ?').run(at, ledgerMark);
     }
   };
 
@@ -173,19 +203,6 @@ export function seed(db) {
   db.prepare('UPDATE markets SET closes_at = ? WHERE id = ?').run(days(-1), past.id);
   resolveMarket(db, users.get('demo'), past.id, 0);
 
-  // Spread the seeded trades across each market's lifetime so charts have shape.
-  for (const row of db.prepare('SELECT id, created_at FROM markets').all()) {
-    const ids = db
-      .prepare("SELECT id FROM trades WHERE market_id = ? AND side IN ('buy','sell') ORDER BY id")
-      .all(row.id);
-    const start = Date.parse(row.created_at);
-    const end = Date.now();
-    ids.forEach((t, i) => {
-      const at = new Date(start + ((end - start) * (i + 1)) / (ids.length + 1)).toISOString();
-      db.prepare('UPDATE trades SET created_at = ? WHERE id = ?').run(at, t.id);
-    });
-    marketRowById(db, row.id);
-  }
   return true;
 }
 

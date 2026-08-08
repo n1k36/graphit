@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Prognose — prediction markets</title>
-    <meta name="description" content="Trade play-money prediction markets on anything. Prices are probabilities." />
+    <title>Prophit — Wette auf alles.</title>
+    <meta name="description" content="Trade prediction markets on anything. Every price is a probability." />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232d7fff'/%3E%3Cpath d='M7 21l6-7 5 4 7-9' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
@@ -14,12 +14,12 @@
   <body>
     <header class="topbar">
       <div class="topbar-inner">
-        <a class="brand" href="#/" aria-label="Prognose home">
+        <a class="brand" href="#/" aria-label="Home">
           <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
             <rect width="32" height="32" rx="8" fill="currentColor" />
             <path d="M7 21l6-7 5 4 7-9" stroke="#0b0e14" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
-          <span>Prognose</span>
+          <span data-brand>Prophit</span>
         </a>
 
         <form class="search" id="search-form" role="search">
@@ -31,11 +31,16 @@
       </div>
     </header>
 
+    <div class="ticker" aria-hidden="true">
+      <span class="ticker-label">LIVE</span>
+      <div class="ticker-window"><div class="ticker-rail" id="ticker-rail"></div></div>
+    </div>
+
     <main id="app" class="app"><div class="loading">Loading…</div></main>
 
     <footer class="footer">
-      <span>Prognose — play-money prediction markets running on an LMSR automated market maker.</span>
-      <span class="muted">No real currency is involved anywhere in this app.</span>
+      <span><b data-brand>Prophit</b> — prediction markets on an LMSR automated market maker.</span>
+      <span class="muted">18+. Markets carry risk — never stake more than you can afford to lose. <a href="#/wallet">Set a limit</a>.</span>
     </footer>
 
     <div id="toasts" class="toasts" aria-live="polite"></div>

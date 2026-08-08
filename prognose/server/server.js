@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { ROOT, openDb } from './db.js';
+import { BRAND, ROOT, openDb } from './db.js';
 import { HttpError } from './errors.js';
 import { handleApi } from './api.js';
 import * as auth from './auth.js';
@@ -41,11 +41,11 @@ async function readBody(req) {
     if (size > MAX_BODY) throw new HttpError(413, 'Request body is too large.');
     chunks.push(chunk);
   }
-  if (!chunks.length) return {};
-  const text = Buffer.concat(chunks).toString('utf8');
+  if (!chunks.length) return { body: {}, raw: '' };
+  const raw = Buffer.concat(chunks).toString('utf8');
   try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    const parsed = JSON.parse(raw);
+    return { body: parsed && typeof parsed === 'object' ? parsed : {}, raw };
   } catch {
     throw new HttpError(400, 'Request body must be valid JSON.');
   }
@@ -87,6 +87,8 @@ export function createServer(db) {
     try {
       if (url.pathname.startsWith('/api/')) {
         const token = auth.tokenFromRequest(req);
+        const { body, raw } =
+          req.method === 'GET' || req.method === 'HEAD' ? { body: {}, raw: '' } : await readBody(req);
         const ctx = {
           db,
           req,
@@ -94,7 +96,8 @@ export function createServer(db) {
           method: req.method,
           pathname: url.pathname,
           query: url.searchParams,
-          body: req.method === 'GET' || req.method === 'HEAD' ? {} : await readBody(req),
+          body,
+          rawBody: raw,
           token,
           user: auth.userForToken(db, token),
           ip: req.socket.remoteAddress ?? 'unknown',
@@ -112,7 +115,7 @@ export function createServer(db) {
       if (err instanceof HttpError) {
         sendJson(res, err.status, { error: err.message, details: err.details });
       } else {
-        console.error(`[prognose] ${req.method} ${url.pathname} failed:`, err);
+        console.error(`[${BRAND.name}] ${req.method} ${url.pathname} failed:`, err);
         sendJson(res, 500, { error: 'Something went wrong on our side.' });
       }
     }
@@ -126,7 +129,8 @@ export function start({ port = Number(process.env.PORT) || 4173, dbFile, quiet =
   server.listen(port, () => {
     if (!quiet) {
       const actual = server.address().port;
-      console.log(`\n  Prognose is live on http://localhost:${actual}`);
+      console.log(`\n  ${BRAND.name} — ${BRAND.tagline}`);
+      console.log(`  Live on http://localhost:${actual}`);
       if (seeded) console.log('  Seeded a fresh database with demo markets (sign in as demo / demo123).');
       console.log('');
     }

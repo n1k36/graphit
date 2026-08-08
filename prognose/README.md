@@ -1,9 +1,9 @@
-# Prognose
+# Prophit
 
-A Polymarket-style prediction market app: create markets on any question, trade
-shares in the outcomes with play money, and settle them when the answer is known.
-Prices *are* probabilities — a share trading at 63¢ means the market thinks that
-outcome is 63% likely, and it pays $1.00 if it happens.
+**Wette auf alles.** A prediction market platform: create markets on any question,
+trade shares in the outcomes, settle them when the answer is known. Prices *are*
+probabilities — a share trading at 63¢ means the market thinks that outcome is
+63% likely, and it pays $1.00 if it happens.
 
 Built with **zero dependencies**: Node's built-in HTTP server and `node:sqlite` on
 the back end, vanilla JavaScript on the front. No build step, no bundler, no
@@ -14,23 +14,114 @@ cd prognose
 npm start          # http://localhost:4173
 ```
 
-The first run seeds a demo database. Sign in as **`demo` / `demo123`**, or create
-an account — every account starts with $1,000 in play money.
+The first run seeds a demo database. Sign in as **`demo` / `demo123`** (an admin,
+so the control room is visible), or create an account.
 
 ```bash
-npm test           # 37 tests: LMSR maths + full API integration
+npm test           # 50 tests: LMSR maths, API, payments, engagement
 npm run dev        # restart on file changes
 npm run seed       # seed a database without starting the server
 ```
 
-## How the market maker works
+The name lives in one place (`BRAND` in `server/db.js`, or the `BRAND_NAME`
+environment variable) — renaming the whole product is a one-line change.
+
+---
+
+## 1. How you make money
+
+Three revenue levers, all tunable at runtime from **Control room → Economics**
+without a restart or a deploy. Changes apply to the very next trade.
+
+| Lever | Default | What it does |
+|---|---|---|
+| `platformFeeRate` | 0.60% | Your cut of every trade's notional |
+| `creatorFeeRate` | 0.40% | Paid to whoever created the market |
+| `listingFee` | $0 | One-off charge to open a market |
+| `withdrawalFeeRate` / `withdrawalFeeFlat` | 0% / $0 | Charged when cash leaves |
+
+The default total is a **1% trade fee split 60/40** between the house and the
+market creator. That split is deliberate: paying creators is what makes people
+open markets on everything, which is the only way a "bet on anything" platform
+gets to the size of Polymarket or Kalshi. You keep the majority and it costs you
+nothing up front — creators are also the ones who post the liquidity subsidy.
+
+The admin panel shows what any setting is worth before you save it:
+
+> Total fee **1.00%** per trade — house keeps **0.60%**, creators get **0.40%**.
+> At yesterday's $715 of volume that is **$4.29** to the treasury per day, about
+> **$1,566** a year.
+
+**Every cent is traceable.** The treasury is not a number in a column, it is
+`SUM(amount) WHERE account = 'platform'` over the ledger. Revenue by source,
+revenue by day and total liabilities to traders are all queries over the same
+table.
+
+## 2. The payment system
+
+Money moves through a **single ledger table**, and nothing changes a balance
+without writing a row to it. That makes the wallet statement, the treasury and
+the revenue dashboard three views of one source of truth.
+
+Balances are split in two, the way every real betting platform does it:
+
+- **cash** — from deposits and winnings. Withdrawable.
+- **bonus** — welcome, streak and referral credit. Playable, not withdrawable.
+
+Bonus credit is always spent before cash, and cash only unlocks once bonus money
+has been turned over (`wageringMultiplier`, 1× by default). Without that rule,
+"sign up, get $1,000, cash out" is free money.
+
+**Deposits** go through a provider adapter (`server/payments.js`):
+
+```
+createDeposit → provider.createCheckout → user pays → webhook → settleDeposit
+```
+
+`settleDeposit` is **idempotent by payment reference** — a webhook replayed ten
+times credits the account exactly once (there is a test for this). Webhooks are
+HMAC signature-verified; unsigned ones are rejected with a 401.
+
+The bundled provider is a **mock/sandbox** one: a checkout page inside the app,
+no real money. `stripeProvider` is stubbed alongside it with the three methods it
+needs. Swapping providers is one file; nothing else in the codebase changes.
+
+**Withdrawals** debit immediately (so the money cannot be spent while pending),
+then wait in an admin approval queue. Approving calls the provider payout;
+rejecting refunds the user in full, fee included.
+
+> Real-money prediction markets are a licensed activity — Kalshi is a
+> CFTC-regulated exchange, Polymarket was fenced out of the US for years. The
+> payment rails here are built properly but deliberately ship pointed at a
+> sandbox. Wiring a live provider is the easy part; the licence is not.
+
+## 3. Why people come back
+
+| | |
+|---|---|
+| **Live ticker** | Every trade on the platform scrolls across the top, refreshed every 12s. The place always looks busy. |
+| **Daily bonus + streak** | Escalating reward, `dailyBonusBase × streak` capped at `dailyBonusMax`. Miss a day and the streak resets. |
+| **XP and levels** | One XP per dollar traded, eight tiers from Rookie to Legend. Level chip sits in the nav next to the balance. |
+| **Achievements** | Eight unlockables — first trade, first win, whale, week-long streak — with a confetti burst when they land. |
+| **Notifications** | Bell with unread count. Settlement tells you what you won or lost, and winning fires confetti. |
+| **Referrals** | Personal invite link; both sides get `referralBonus` in credit. |
+| **🔥 Hot markets** | Ranked by 24h volume, badged on the card, with a dedicated sort. |
+| **Urgency** | Closing markets switch to an amber countdown as the deadline nears. |
+| **Hero** | Live platform stats and a "claim your free credit" call to action for signed-out visitors. |
+
+Every one of these is a real, checkable feature — the numbers come from the
+database, not from decoration.
+
+**Play limits are in the same layer on purpose.** Users can set a 24-hour deposit
+cap and self-exclude for a fixed period; excluded accounts cannot trade, deposit
+or claim bonuses. Every licensing regime requires this, so building it in now
+costs nothing and skipping it would block the licence later.
+
+## 4. The market maker
 
 There is no order book. Every market is an **LMSR** (Hanson's Logarithmic Market
 Scoring Rule) automated market maker, so there is always a price and always
 liquidity — you never need a counterparty.
-
-A market over `n` outcomes tracks the shares sold of each outcome, `q`, and a
-liquidity parameter `b`:
 
 ```
 C(q) = b · ln( Σᵢ exp(qᵢ / b) )        cost function
@@ -38,98 +129,86 @@ pᵢ   = exp(qᵢ/b) / Σⱼ exp(qⱼ/b)        price of outcome i
 ```
 
 Buying `d` shares of outcome `i` costs `C(q + d·eᵢ) − C(q)`; selling is the same
-with a negative `d`. This gives some useful properties, all covered by tests in
-`test/lmsr.test.js`:
+with a negative `d`. Properties, each covered by a test in `test/lmsr.test.js`:
 
 - Prices always sum to exactly 1, so they read directly as probabilities.
-- Buying pushes a price up and the others down, with slippage that grows as the
-  order gets bigger relative to `b`.
+- Buying pushes a price up and the others down, with slippage that grows with
+  order size relative to `b`.
 - A share never costs more than the $1.00 it can pay out.
 - Buying one share of *every* outcome costs exactly $1.00 — no arbitrage.
 - The market maker's worst-case loss is bounded by `b · ln(n)`.
 
-That last bound is why creating a market costs something. The creator posts a
-**subsidy** equal to `b · ln(n)`, which is the most the market maker can ever
-lose. At settlement they get it back, plus whatever the AMM took in and did not
-have to pay out. More subsidy means deeper liquidity and less price impact per
-dollar traded.
+That bound is why opening a market costs something: the creator posts a
+**subsidy** equal to `b · ln(n)`, the most the AMM can ever lose. At settlement
+they get it back plus whatever the AMM earned or lost. More subsidy means deeper
+liquidity and less price impact per dollar.
 
-Trading charges a 1% fee, which goes to the market's creator.
+## 5. Correctness
 
-## What you can do
+**Money is conserved, and it is asserted.** After the entire test suite has run,
+one test sums every user balance, every open position marked to market, every
+AMM's equity and the treasury, and checks the total equals bonuses issued plus
+deposits minus withdrawals. If any code path ever created or destroyed a cent,
+that test fails.
 
-| | |
-|---|---|
-| **Markets** | Binary (Yes/No) or multiple choice, up to 8 outcomes. Categories, search, sorting, filtering by open/closed/settled. |
-| **Trading** | Buy with a dollar amount, sell by share count or a percentage of your position. Live preview of shares, average price, fee and payout before you commit. |
-| **Charts** | Probability history per outcome, derived from the trade log, with a hover crosshair and 1D/1W/1M/All ranges. |
-| **Portfolio** | Open positions marked to market, unrealised and realised P&L, all-time profit, full trade history. |
-| **Settlement** | The creator (or an admin) picks the winning outcome; winning shares pay $1.00 each and the rest expire. A market can also be cancelled, refunding holders at the last traded price. |
-| **Social** | Comments per market, public trader profiles, and a leaderboard ranked by net worth. |
+Other things the 50 tests pin down: idempotent deposits, signature-checked
+webhooks, the fee split matching the configured rates, withdrawal holds and
+refunds, wagering gates, streak progression, referral payouts, self-exclusion
+blocking trades, admin-only access, and the LMSR invariants above.
 
-## Design notes
+Other design notes:
 
-**Money is conserved.** Every dollar is accounted for at all times: user cash +
-open positions marked to market + each AMM's equity (`subsidy + collected −
-what it owes holders`) equals exactly `$1,000 × number of accounts`. There is a
-test that asserts this over the whole database after the full suite has run.
+- **Positions are long-only.** You cannot short an outcome; you buy the opposite
+  one, which is equivalent and keeps every position collateralised.
+- **Trades are priced twice.** The browser mirrors the LMSR maths so previews are
+  instant, but the server always recomputes the fill and is the only authority.
+  The client sends its expected price with a slippage tolerance (3% default) and
+  the server rejects the trade with a 409 if the market moved.
+- **Security.** scrypt password hashing with per-user salts and constant-time
+  comparison; opaque 256-bit bearer tokens; parameterised SQL everywhere; all
+  user text escaped before it reaches the DOM; static serving confined to
+  `public/`; 256 KB body cap; rate-limited auth endpoints.
 
-**Positions are long-only.** You cannot short an outcome; you buy the opposite
-outcome instead, which is economically equivalent and keeps every position
-collateralised.
-
-**Trades are priced twice.** The browser mirrors the LMSR maths so previews
-update instantly with no round trip, but the server always recomputes the fill
-and is the only authority. Clients send the price they expected along with a
-slippage tolerance (3% by default), and the server rejects the trade with a 409
-if someone moved the market in between.
-
-**Cost basis and P&L.** Buying adds to a position's cost basis; selling realises
-a proportional share of it. Fully closing a position sweeps any rounding dust
-into realised P&L so nothing is stranded. Settlement realises the remainder.
-
-**Security.** Passwords are hashed with scrypt and a per-user salt, and compared
-in constant time. Sessions are opaque 256-bit bearer tokens. Every SQL statement
-is parameterised, all user text is escaped before it reaches the DOM, static file
-serving is confined to `public/`, request bodies are capped at 256 KB, and auth
-endpoints are rate limited per IP.
-
-## Layout
+## 6. Layout
 
 ```
 prognose/
 ├── server/
-│   ├── lmsr.js      pure market-maker maths, no I/O
-│   ├── db.js        schema, connection, transaction helper
-│   ├── auth.js      password hashing and sessions
-│   ├── logic.js     markets, trading, settlement, portfolio
-│   ├── api.js       routing and request handling
-│   ├── server.js    HTTP server and static files
-│   └── seed.js      demo users, markets and trades
-├── public/
-│   ├── index.html   app shell
-│   ├── app.js       SPA: router, views, charts, trade panel
-│   └── styles.css
-└── test/
-    ├── lmsr.test.js maths and invariants
-    └── api.test.js  end-to-end API behaviour
+│   ├── lmsr.js        pure market-maker maths, no I/O
+│   ├── db.js          schema, settings, brand, transactions
+│   ├── ledger.js      every movement of money
+│   ├── payments.js    provider adapters, deposits, withdrawals
+│   ├── engagement.js  levels, streaks, achievements, notifications, limits
+│   ├── auth.js        password hashing and sessions
+│   ├── logic.js       markets, trading, settlement, portfolio
+│   ├── api.js         routing and request handling
+│   ├── server.js      HTTP server and static files
+│   └── seed.js        demo users, markets, trades, deposits
+├── public/            index.html · app.js · styles.css  (no build step)
+└── test/              lmsr.test.js · api.test.js
 ```
 
-## Configuration
+## 7. Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `4173` | HTTP port |
 | `PROGNOSE_DB` | `data/prognose.db` | SQLite file, or `:memory:` |
-| `PROGNOSE_AUTH_LIMIT` | `10` signups / `20` logins per minute | Per-IP auth rate limit |
+| `BRAND_NAME` / `BRAND_TAGLINE` | Prophit / Wette auf alles. | Product name |
+| `PAYMENTS_PROVIDER` | `mock` | `mock` or `stripe` |
+| `PAYMENTS_WEBHOOK_SECRET` | `dev-webhook-secret` | HMAC key for webhooks |
+| `PROGNOSE_AUTH_LIMIT` | 10 signups / 20 logins per minute | Per-IP auth rate limit |
 
-Economic parameters — starting balance, fee rate, subsidy bounds — live in
-`CONFIG` in `server/db.js`.
+Economic settings live in the `settings` table, editable from the admin panel;
+`DEFAULT_SETTINGS` in `server/db.js` holds the starting values.
 
-## Caveats
+## 8. What real money would still need
 
-This is a self-contained demo, not a production trading venue. Play money only.
-Sessions never expire, there is no email verification or password reset, and
-`node:sqlite` is still marked experimental in Node (hence `--no-warnings` in the
-npm scripts). SQLite serialises writes, so a single process handles concurrent
-trades correctly, but this would need a real database to scale horizontally.
+The trading engine, ledger and payment flow are production-shaped. Before taking
+real deposits you would need, roughly in order: a licence in each market you
+serve, KYC/AML with sanctions screening, a live payment provider and a real
+custody account, Postgres instead of SQLite (SQLite serialises writes — correct
+under concurrency, but single-node), session expiry and password reset, and
+audited settlement with a dispute process. The demo also hands every new account
+a $1,000 welcome bonus; set `welcomeBonus` to something sane before anyone can
+cash out.

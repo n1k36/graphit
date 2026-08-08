@@ -1,6 +1,8 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { CONFIG, nowIso } from './db.js';
+import { getSettings, nowIso } from './db.js';
 import { HttpError } from './errors.js';
+import { creditUser } from './ledger.js';
+import { applyReferral, ensureProfile, getProfile, levelFor } from './engagement.js';
 
 const KEY_LEN = 64;
 const AVATAR_COLORS = ['#4f8cff', '#22c55e', '#f97316', '#a855f7', '#ec4899', '#14b8a6', '#eab308', '#ef4444'];
@@ -24,7 +26,7 @@ export function validateCredentials(username, password) {
   }
 }
 
-export function createUser(db, username, password, { isAdmin = false } = {}) {
+export function createUser(db, username, password, { isAdmin = false, referralCode = null } = {}) {
   validateCredentials(username, password);
   const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (existing) throw new HttpError(409, 'That username is already taken.');
@@ -32,11 +34,21 @@ export function createUser(db, username, password, { isAdmin = false } = {}) {
   const avatar = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
   const info = db
     .prepare(
-      `INSERT INTO users (username, password_hash, salt, balance, is_admin, avatar, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (username, password_hash, salt, balance, bonus_balance, is_admin, avatar, created_at)
+       VALUES (?, ?, ?, 0, 0, ?, ?, ?)`,
     )
-    .run(username, hash, salt, CONFIG.startingBalance, isAdmin ? 1 : 0, avatar, nowIso());
-  return getUser(db, Number(info.lastInsertRowid));
+    .run(username, hash, salt, isAdmin ? 1 : 0, avatar, nowIso());
+  const id = Number(info.lastInsertRowid);
+  ensureProfile(db, id);
+
+  // The welcome balance is promo credit: playable immediately, withdrawable
+  // only once it has been turned over (see payments.withdrawableAmount).
+  const welcome = getSettings(db).welcomeBonus;
+  if (welcome > 0) {
+    creditUser(db, id, welcome, { kind: 'welcome_bonus', memo: 'Welcome bonus' }, { toBonus: true });
+  }
+  if (referralCode) applyReferral(db, id, referralCode);
+  return getUser(db, id);
 }
 
 export function login(db, username, password) {
@@ -62,24 +74,41 @@ export function userForToken(db, token) {
   const row = db
     .prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?')
     .get(token);
-  return row ? publicUser(row) : null;
+  return row ? publicUser(row, db) : null;
 }
 
 export function getUser(db, id) {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-  return row ? publicUser(row) : null;
+  return row ? publicUser(row, db) : null;
 }
 
-export function publicUser(row) {
-  return {
+export function publicUser(row, db = null) {
+  const cash = row.balance;
+  const bonus = row.bonus_balance ?? 0;
+  const user = {
     id: row.id,
     username: row.username,
-    balance: row.balance,
+    /** Everything the user can trade with. */
+    balance: Math.round((cash + bonus) * 1e4) / 1e4,
+    cashBalance: cash,
+    bonusBalance: bonus,
     realizedPnl: row.realized_pnl,
     isAdmin: !!row.is_admin,
     avatar: row.avatar,
     createdAt: row.created_at,
   };
+  if (db) {
+    const profile = getProfile(db, row.id);
+    user.level = profile.level;
+    user.xp = profile.xp;
+    user.streak = profile.streak;
+    user.bonusReady = profile.bonusReady;
+    user.referralCode = profile.referralCode;
+    user.excludedUntil = profile.excludedUntil;
+  } else {
+    user.level = levelFor(0);
+  }
+  return user;
 }
 
 /** Token from `Authorization: Bearer <token>`. */

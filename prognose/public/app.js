@@ -121,6 +121,9 @@ const S = {
   filters: { search: '', category: 'All', status: 'open', sort: 'volume' },
   trade: { outcome: 0, side: 'buy', amount: '' },
   chartRange: 'all',
+  notifications: { unread: 0, items: [] },
+  stats: null,
+  activity: [],
   page: null,
 };
 
@@ -317,17 +320,36 @@ function renderNav() {
   const link = (href, label) =>
     `<a href="${href}" class="${route.path === href.slice(1) ? 'active' : ''}">${label}</a>`;
   const links = [link('#/', 'Markets'), link('#/leaderboard', 'Leaderboard')];
+
   if (S.user) {
+    const level = S.user.level ?? { level: 1, name: 'Rookie', progress: 0 };
+    links.push(link('#/portfolio', 'Portfolio'), `<a href="#/create">Create</a>`);
+    if (S.user.isAdmin) links.push(link('#/admin', 'Admin'));
+    if (S.user.bonusReady) {
+      links.push(`<button class="bonus-pill" id="bonus-btn" title="Claim your daily bonus">🎁 Claim daily</button>`);
+    } else if (S.user.streak > 0) {
+      links.push(`<span class="streak-pill" title="Daily streak">🔥 ${S.user.streak}</span>`);
+    }
     links.push(
-      link('#/portfolio', 'Portfolio'),
-      `<a href="#/create" class="">Create</a>`,
-      `<span class="balance-chip mono" title="Cash balance">${usd(S.user.balance)} ${avatar(S.user)}</span>`,
+      `<button class="bell" id="bell-btn" aria-label="Notifications">🔔${
+        S.notifications?.unread ? `<span class="badge-dot">${Math.min(S.notifications.unread, 9)}</span>` : ''
+      }</button>`,
+      `<a href="#/wallet" class="balance-chip" title="Cash ${usd(S.user.cashBalance ?? 0)} · bonus ${usd(
+        S.user.bonusBalance ?? 0,
+      )}">
+        <span class="mono">${usd(S.user.balance)}</span>
+        <span class="level-chip" title="Level ${level.level} · ${esc(level.name)}">L${level.level}</span>
+        ${avatar(S.user)}
+      </a>`,
       `<button id="logout-btn">Sign out</button>`,
     );
   } else {
-    links.push(`<a href="#/login" class="signin">Sign in</a>`);
+    links.push(`<a href="#/login" class="ghostish">Sign in</a>`, `<a href="#/signup" class="signin">Get $${
+      S.config?.settings?.welcomeBonus ?? 1000
+    } free</a>`);
   }
   document.getElementById('nav').innerHTML = links.join('');
+
   const logout = document.getElementById('logout-btn');
   if (logout)
     logout.onclick = async () => {
@@ -335,6 +357,33 @@ function renderNav() {
       setToken(null);
       toast('Signed out.');
       navigate('#/');
+    };
+  const bonus = document.getElementById('bonus-btn');
+  if (bonus) bonus.onclick = claimBonus;
+
+  const bell = document.getElementById('bell-btn');
+  if (bell)
+    bell.onclick = (event) => {
+      event.stopPropagation();
+      const existing = document.getElementById('notif-panel');
+      if (existing) return existing.remove();
+      bell.insertAdjacentHTML('afterend', notificationPanel());
+      const markRead = document.getElementById('notif-read');
+      if (markRead)
+        markRead.onclick = async (e) => {
+          e.preventDefault();
+          await api('/api/notifications/read', { method: 'POST' }).catch(() => {});
+          await refreshNotifications();
+          document.getElementById('notif-panel')?.remove();
+        };
+      setTimeout(() => {
+        document.addEventListener('click', function close(e) {
+          if (!e.target.closest('#notif-panel')) {
+            document.getElementById('notif-panel')?.remove();
+            document.removeEventListener('click', close);
+          }
+        });
+      }, 0);
     };
 }
 
@@ -350,6 +399,7 @@ const setApp = (html) => {
 function marketCard(market) {
   const lead = leadOutcome(market);
   const prices = displayPrices(market);
+  const clock = countdown(market.closesAt);
   const statusTag =
     market.status === 'resolved'
       ? `<span class="tag resolved">Resolved: ${esc(market.outcomes[market.resolvedOutcome].label)}</span>`
@@ -357,7 +407,7 @@ function marketCard(market) {
         ? '<span class="tag cancelled">Cancelled</span>'
         : market.closed
           ? '<span class="tag closed">Closed</span>'
-          : `<span class="faint">${until(market.closesAt)}</span>`;
+          : `<span class="${clock.urgent ? 'urgent' : 'faint'}">${clock.urgent ? '⏱ ' : ''}${clock.text}</span>`;
 
   const rows = market.isBinary
     ? ''
@@ -376,7 +426,8 @@ function marketCard(market) {
         market.outcomes.length > 3 ? `<div class="outcome-row faint">+${market.outcomes.length - 3} more</div>` : ''
       }</div>`;
 
-  return `<article class="market-card" data-slug="${esc(market.slug)}">
+  return `<article class="market-card ${market.hot ? 'hot' : ''}" data-slug="${esc(market.slug)}">
+      ${market.hot ? '<span class="hot-flag">🔥 HOT</span>' : ''}
       <div class="head">
         <div class="market-emoji">${esc(market.emoji || '📈')}</div>
         <div class="question">${esc(market.question)}</div>
@@ -389,6 +440,7 @@ function marketCard(market) {
       <div class="card-foot">
         <span class="tag">${esc(market.category)}</span>
         <span>${usd(market.volume, 0)} vol</span>
+        ${market.volume24h > 0 ? `<span class="pos">+${usd(market.volume24h, 0)} 24h</span>` : ''}
         <span class="spacer"></span>
         ${statusTag}
       </div>
@@ -403,13 +455,18 @@ async function viewMarkets() {
     status: S.filters.status,
     sort: S.filters.sort,
   });
-  const { markets } = await api(`/api/markets?${params}`);
+  const [{ markets }, stats] = await Promise.all([
+    api(`/api/markets?${params}`),
+    S.stats ? Promise.resolve(S.stats) : api('/api/stats').catch(() => null),
+  ]);
+  S.stats = stats;
   const categories = ['All', ...(S.config?.categories ?? [])];
 
   setApp(`
+    ${S.filters.search || S.filters.category !== 'All' ? '' : heroSection(stats)}
     <div class="page-head">
       <div>
-        <h1>Markets</h1>
+        <h1>${S.filters.search ? `Results for "${esc(S.filters.search)}"` : 'Markets'}</h1>
         <div class="muted">Every price is the market's estimate of the probability. Buy low, sell high, or hold to settlement.</div>
       </div>
     </div>
@@ -433,6 +490,7 @@ async function viewMarkets() {
       </select>
       <select class="control" data-filter="sort">
         ${[
+          ['hot', '🔥 Hot right now'],
           ['volume', 'Top volume'],
           ['activity', 'Most traded'],
           ['newest', 'Newest'],
@@ -915,6 +973,10 @@ async function submitTrade() {
       'success',
     );
     S.trade.amount = '';
+    for (const badge of res.unlocked ?? []) {
+      celebrate();
+      toast(`${badge.icon} Achievement unlocked: ${badge.title}`, 'success');
+    }
     renderNav();
     await refreshMarket();
   } catch (err) {
@@ -1017,7 +1079,9 @@ async function viewPortfolio() {
 
 async function viewUser(username) {
   setApp('<div class="loading">Loading profile…</div>');
-  renderPortfolio(await api(`/api/users/${encodeURIComponent(username)}`), { own: S.user?.username === username });
+  const data = await api(`/api/users/${encodeURIComponent(username)}`);
+  renderPortfolio(data, { own: S.user?.username === username });
+  app().insertAdjacentHTML('beforeend', achievementStrip(data.achievements));
 }
 
 async function viewLeaderboard() {
@@ -1029,19 +1093,21 @@ async function viewLeaderboard() {
       <div class="muted">Ranked by net worth: cash, open positions and liquidity posted as a market creator.</div>
     </div></div>
     <div class="card"><table class="data">
-      <thead><tr><th></th><th>Trader</th><th class="num">Net worth</th><th class="num">Cash</th>
-      <th class="num">Positions</th><th class="num">Profit</th><th class="num">Trades</th><th class="num">Markets</th></tr></thead>
+      <thead><tr><th></th><th>Trader</th><th>Level</th><th class="num">Net worth</th>
+      <th class="num">Profit</th><th class="num">ROI</th><th class="num">W/L</th><th class="num">Trades</th></tr></thead>
       <tbody>${users
         .map(
           (u) => `<tr>
             <td class="rank ${u.rank <= 3 ? 'top' : ''}">#${u.rank}</td>
-            <td><div class="user-cell">${avatar(u, true)}<a href="#/user/${esc(u.username)}">${esc(u.username)}</a></div></td>
+            <td><div class="user-cell">${avatar(u, true)}<a href="#/user/${esc(u.username)}">${esc(u.username)}</a>${
+              u.streak > 2 ? `<span class="streak-mini">🔥${u.streak}</span>` : ''
+            }</div></td>
+            <td><span class="level-chip">L${u.level.level}</span> <span class="muted">${esc(u.level.name)}</span></td>
             <td class="num mono"><b>${usd(u.netWorth)}</b></td>
-            <td class="num mono">${usd(u.balance)}</td>
-            <td class="num mono">${usd(u.positionValue + u.creatorEquity)}</td>
             <td class="num mono ${cls(u.profit)}">${signed(u.profit)}</td>
+            <td class="num mono ${cls(u.roi)}">${(u.roi * 100).toFixed(1)}%</td>
+            <td class="num mono faint">${u.wins}/${u.losses}</td>
             <td class="num mono">${u.trades}</td>
-            <td class="num mono">${u.marketsCreated}</td>
           </tr>`,
         )
         .join('')}</tbody>
@@ -1185,15 +1251,30 @@ function viewCreate() {
  * Auth
  * ------------------------------------------------------------------ */
 
+/** Referral code from either ?ref= or #/signup?ref=. */
+function referralFromUrl() {
+  const fromSearch = new URLSearchParams(location.search).get('ref');
+  const hash = location.hash.split('?')[1] ?? '';
+  return fromSearch || new URLSearchParams(hash).get('ref') || null;
+}
+
 function viewAuth(mode = 'login') {
+  const referral = referralFromUrl();
   setApp(`
     <div class="card auth-card">
       <h1 style="font-size:20px">${mode === 'login' ? 'Sign in' : 'Create an account'}</h1>
       <div class="muted" style="margin-bottom:16px">${
         mode === 'login'
           ? 'Try the demo account: <b>demo</b> / <b>demo123</b>.'
-          : `Every new account starts with ${usd(S.config?.startingBalance ?? 1000, 0)} in play money.`
+          : `Start with ${usd(S.config?.settings?.welcomeBonus ?? 1000, 0)} in bonus credit — no deposit needed.`
       }</div>
+      ${
+        referral && mode !== 'login'
+          ? `<div class="notice win" style="margin-bottom:14px">Invite code <b>${esc(referral)}</b> applied — an extra ${usd(
+              S.config?.settings?.referralBonus ?? 25,
+            )} lands in your balance.</div>`
+          : ''
+      }
       <div class="form-grid">
         <div class="field"><label for="a-user">Username</label><input class="control" id="a-user" autocomplete="username" /></div>
         <div class="field"><label for="a-pass">Password</label><input class="control" id="a-pass" type="password" autocomplete="current-password" /></div>
@@ -1218,6 +1299,7 @@ function viewAuth(mode = 'login') {
         body: {
           username: document.getElementById('a-user').value.trim(),
           password: document.getElementById('a-pass').value,
+          referralCode: referralFromUrl(),
         },
       });
       setToken(res.token);
@@ -1269,6 +1351,12 @@ async function route() {
       case 'leaderboard':
         await viewLeaderboard();
         break;
+      case 'wallet':
+        await viewWallet();
+        break;
+      case 'admin':
+        await viewAdmin();
+        break;
       case 'create':
         viewCreate();
         break;
@@ -1290,7 +1378,10 @@ async function route() {
 }
 
 async function refreshUser() {
-  if (!S.token) return;
+  if (!S.token) {
+    renderNav();
+    return;
+  }
   try {
     const { user } = await api('/api/me');
     S.user = user;
@@ -1318,9 +1409,692 @@ async function boot() {
   };
 
   S.config = await api('/api/config').catch(() => null);
+  if (S.config?.brand?.name) {
+    document.title = `${S.config.brand.name} — ${S.config.brand.tagline}`;
+    document.querySelectorAll('[data-brand]').forEach((el) => {
+      el.textContent = S.config.brand.name;
+    });
+  }
   await refreshUser();
   window.addEventListener('hashchange', route);
-  route();
+
+  // The sandbox checkout lives on a real path, outside the hash router.
+  if (location.pathname === '/checkout') {
+    renderNav();
+    viewCheckout();
+  } else {
+    route();
+  }
+
+  refreshTicker();
+  refreshNotifications();
+  setInterval(refreshTicker, 12_000);
+  setInterval(() => {
+    if (S.user) refreshNotifications();
+  }, 20_000);
+  // Keep the headline stats fresh without a reload.
+  setInterval(async () => {
+    if (currentRoute().head !== '') return;
+    S.stats = await api('/api/stats').catch(() => S.stats);
+  }, 30_000);
 }
+
+
+/* ================================================================== *
+ * Live ticker, hero and celebration effects
+ * ================================================================== */
+
+/** Colourful confetti burst. Fires when something good happens to you. */
+function celebrate(count = 70) {
+  const colors = ['#14c46a', '#2d7fff', '#f6b83f', '#ec4899', '#a855f7', '#ffffff'];
+  const layer = document.createElement('div');
+  layer.className = 'confetti-layer';
+  for (let i = 0; i < count; i++) {
+    const bit = document.createElement('i');
+    bit.style.left = `${Math.random() * 100}%`;
+    bit.style.background = colors[i % colors.length];
+    bit.style.animationDelay = `${Math.random() * 0.4}s`;
+    bit.style.animationDuration = `${1.6 + Math.random() * 1.4}s`;
+    bit.style.transform = `rotate(${Math.random() * 360}deg)`;
+    layer.append(bit);
+  }
+  document.body.append(layer);
+  setTimeout(() => layer.remove(), 3400);
+}
+
+/** Countdown string that conveys urgency as the close approaches. */
+function countdown(iso) {
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return { text: 'closed', urgent: true };
+  const d = Math.floor(diff / 86400000);
+  const h = Math.floor((diff % 86400000) / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  if (d >= 2) return { text: `${d}d left`, urgent: false };
+  if (d >= 1) return { text: `${d}d ${h}h left`, urgent: true };
+  if (h >= 1) return { text: `${h}h ${m}m left`, urgent: true };
+  return { text: `${m}m left`, urgent: true };
+}
+
+function tickerItem(item) {
+  return `<a class="tick" href="#/market/${esc(item.market.slug)}">
+      <span class="tick-emoji">${esc(item.market.emoji || '📈')}</span>
+      <b>${esc(item.user.username)}</b>
+      <span class="${item.side === 'buy' ? 'pos' : 'neg'}">${item.side === 'buy' ? 'bought' : 'sold'}</span>
+      <b>${esc(item.outcomeLabel)}</b>
+      <span class="muted">${usd(item.cost)} @ ${cents(item.price)}</span>
+      <span class="faint">${esc(item.market.question.slice(0, 46))}${item.market.question.length > 46 ? '…' : ''}</span>
+    </a>`;
+}
+
+async function refreshTicker() {
+  const rail = document.getElementById('ticker-rail');
+  if (!rail) return;
+  try {
+    const { activity } = await api('/api/activity?limit=22');
+    if (!activity.length) return;
+    S.activity = activity;
+    // Rendered twice so the marquee can loop seamlessly.
+    const markup = activity.map(tickerItem).join('');
+    rail.innerHTML = markup + markup;
+    rail.style.animationDuration = `${Math.max(30, activity.length * 3.2)}s`;
+  } catch {
+    /* the ticker is decoration — never let it break the page */
+  }
+}
+
+function heroSection(stats) {
+  if (!stats) return '';
+  return `<section class="hero">
+      <div class="hero-glow"></div>
+      <div class="hero-content">
+        <div class="live-badge"><span class="dot"></span>LIVE</div>
+        <h1 class="hero-title">${esc(S.config?.brand?.tagline ?? 'Bet on anything.')}</h1>
+        <p class="hero-sub">Every price is a probability, set by people with money on the line. Trade it, or make your own market and earn the fees.</p>
+        <div class="hero-stats">
+          <div><b>${usd(stats.volume24h, 0)}</b><span>24h volume</span></div>
+          <div><b>${stats.trades24h.toLocaleString('en-US')}</b><span>24h trades</span></div>
+          <div><b>${stats.openMarkets}</b><span>open markets</span></div>
+          <div><b>${stats.traders.toLocaleString('en-US')}</b><span>traders</span></div>
+        </div>
+        ${
+          S.user
+            ? `<a class="btn sm hero-cta" href="#/create">Create a market →</a>`
+            : `<a class="btn sm hero-cta" href="#/signup">Claim ${usd(S.config?.settings?.welcomeBonus ?? 1000, 0)} free →</a>`
+        }
+      </div>
+    </section>`;
+}
+
+/* ================================================================== *
+ * Notifications
+ * ================================================================== */
+
+async function refreshNotifications() {
+  if (!S.user) {
+    S.notifications = { unread: 0, items: [] };
+    return;
+  }
+  try {
+    const data = await api('/api/notifications');
+    const previous = S.notifications?.items?.[0]?.id ?? null;
+    S.notifications = data;
+    const newest = data.items[0];
+    // A brand new win notification is worth a celebration.
+    if (newest && newest.id !== previous && previous !== null && !newest.read) {
+      if (newest.kind === 'win' || newest.kind === 'achievement') celebrate();
+      toast(newest.title, newest.kind === 'loss' ? '' : 'success');
+    }
+    renderNav();
+  } catch {
+    /* ignore */
+  }
+}
+
+function notificationPanel() {
+  const items = S.notifications?.items ?? [];
+  return `<div class="popover" id="notif-panel">
+      <div class="popover-head"><b>Notifications</b>${
+        S.notifications?.unread ? '<button class="linkish" id="notif-read">Mark all read</button>' : ''
+      }</div>
+      ${
+        items.length
+          ? items
+              .slice(0, 20)
+              .map(
+                (n) => `<a class="notif ${n.read ? '' : 'unread'}" href="${esc(n.href || '#/')}">
+                  <div class="notif-title">${esc(n.title)}</div>
+                  <div class="notif-body">${esc(n.body)}</div>
+                  <div class="faint" style="font-size:11.5px">${timeAgo(n.createdAt)}</div>
+                </a>`,
+              )
+              .join('')
+          : '<div class="muted" style="padding:14px">Nothing yet. Place a trade and we will keep you posted.</div>'
+      }
+    </div>`;
+}
+
+/* ================================================================== *
+ * Daily bonus
+ * ================================================================== */
+
+async function claimBonus() {
+  try {
+    const result = await api('/api/bonus/claim', { method: 'POST' });
+    S.user = result.user;
+    celebrate(90);
+    toast(`Day ${result.streak} streak — ${usd(result.amount)} added.`, 'success');
+    renderNav();
+    if (currentRoute().head === 'wallet') viewWallet();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+/* ================================================================== *
+ * Wallet
+ * ================================================================== */
+
+async function viewWallet() {
+  if (!S.user) return navigate('#/login');
+  setApp('<div class="loading">Loading wallet…</div>');
+  const [wallet, referrals] = await Promise.all([api('/api/wallet'), api('/api/referrals')]);
+  const cfg = S.config?.settings ?? {};
+  const level = wallet.user.level;
+  const link = `${location.origin}/#/signup?ref=${referrals.code}`;
+
+  setApp(`
+    <div class="page-head"><div>
+      <h1>Wallet</h1>
+      <div class="muted">Deposits, withdrawals and every credit that has ever touched your account.</div>
+    </div></div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="k">Cash</div><div class="v">${usd(wallet.cash)}</div><div class="faint" style="font-size:12px">withdrawable funds</div></div>
+      <div class="stat"><div class="k">Bonus credit</div><div class="v">${usd(wallet.user.bonusBalance)}</div><div class="faint" style="font-size:12px">playable, not cashable</div></div>
+      <div class="stat"><div class="k">Available to withdraw</div><div class="v ${wallet.withdrawable > 0 ? 'pos' : ''}">${usd(wallet.withdrawable)}</div>
+        ${
+          wallet.wageringRemaining > 0
+            ? `<div class="faint" style="font-size:12px">${usd(wallet.wageringRemaining)} more volume needed</div>`
+            : '<div class="faint" style="font-size:12px">ready to go</div>'
+        }
+      </div>
+      <div class="stat"><div class="k">Level ${level.level} · ${esc(level.name)}</div>
+        <div class="v">${Math.round(level.xp).toLocaleString('en-US')} XP</div>
+        <div class="xp-bar"><span style="width:${(level.progress * 100).toFixed(1)}%"></span></div>
+        <div class="faint" style="font-size:12px">${
+          level.nextName ? `${Math.round(level.nextLevelXp - level.xp).toLocaleString('en-US')} XP to ${esc(level.nextName)}` : 'max level'
+        }</div>
+      </div>
+    </div>
+
+    <div class="row-2">
+      <div class="card">
+        <h3>Add funds</h3>
+        <div class="amount-field"><span class="prefix">$</span>
+          <input id="dep-amount" type="text" inputmode="decimal" placeholder="${cfg.minDeposit ?? 10}" />
+        </div>
+        <div class="quick">
+          ${[25, 50, 100, 250].map((v) => `<button data-dep="${v}">$${v}</button>`).join('')}
+        </div>
+        <button class="btn" id="dep-go">Continue to checkout</button>
+        <div class="faint" style="font-size:12px;margin-top:8px">
+          Min ${usd(cfg.minDeposit ?? 10, 0)}, max ${usd(cfg.maxDeposit ?? 5000, 0)} per deposit.
+          Provider: <b>${esc(S.config?.paymentProvider ?? 'mock')}</b>${
+            S.config?.paymentProvider === 'mock' ? ' — sandbox, no real money moves.' : ''
+          }
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Withdraw</h3>
+        <div class="amount-field"><span class="prefix">$</span>
+          <input id="wd-amount" type="text" inputmode="decimal" placeholder="${cfg.minWithdrawal ?? 20}" />
+        </div>
+        <div class="field" style="margin-bottom:10px">
+          <input class="control" id="wd-dest" placeholder="Payout destination (IBAN, wallet address…)" />
+        </div>
+        <button class="btn ghost" id="wd-go" ${wallet.withdrawable <= 0 ? 'disabled' : ''}>Request withdrawal</button>
+        <div class="faint" style="font-size:12px;margin-top:8px">
+          ${
+            wallet.wageringRemaining > 0
+              ? `Bonus funds carry a ${usd(wallet.wageringRequired, 0)} turnover requirement. ${usd(
+                  wallet.wageringRemaining,
+                )} to go.`
+              : `Minimum ${usd(cfg.minWithdrawal ?? 20, 0)}. Fee: ${pct(cfg.withdrawalFeeRate ?? 0, 1)}${
+                  cfg.withdrawalFeeFlat ? ` + ${usd(cfg.withdrawalFeeFlat)}` : ''
+                }. Reviewed by an admin before payout.`
+          }
+        </div>
+      </div>
+    </div>
+
+    <div class="section card referral-card">
+      <h3>Invite friends, both get paid</h3>
+      <div class="muted" style="margin-bottom:12px">You and everyone you bring in get ${usd(
+        cfg.referralBonus ?? 25,
+      )} in bonus credit. ${referrals.invited} joined so far, ${usd(referrals.earned)} earned.</div>
+      <div class="copy-row">
+        <input class="control mono" id="ref-link" readonly value="${esc(link)}" />
+        <button class="btn sm" id="ref-copy">Copy</button>
+      </div>
+    </div>
+
+    ${
+      wallet.deposits.length || wallet.withdrawals.length
+        ? `<div class="section card">
+            <h3>Payments</h3>
+            <table class="data">
+              <thead><tr><th>Type</th><th>Reference</th><th class="num">Amount</th><th>Status</th><th class="num">When</th></tr></thead>
+              <tbody>
+                ${wallet.deposits
+                  .map(
+                    (d) => `<tr><td>Deposit</td><td class="mono faint">${esc(d.reference.slice(0, 16))}</td>
+                      <td class="num mono pos">+${usd(d.amount)}</td>
+                      <td><span class="tag ${d.status === 'succeeded' ? 'resolved' : ''}">${esc(d.status)}</span></td>
+                      <td class="num faint">${timeAgo(d.createdAt)}</td></tr>`,
+                  )
+                  .join('')}
+                ${wallet.withdrawals
+                  .map(
+                    (w) => `<tr><td>Withdrawal</td><td class="mono faint">${esc(w.destination.slice(0, 16))}</td>
+                      <td class="num mono neg">-${usd(w.amount)}</td>
+                      <td><span class="tag ${w.status === 'paid' ? 'resolved' : w.status === 'rejected' ? 'closed' : ''}">${esc(w.status)}</span></td>
+                      <td class="num faint">${timeAgo(w.createdAt)}</td></tr>`,
+                  )
+                  .join('')}
+              </tbody>
+            </table>
+          </div>`
+        : ''
+    }
+
+    <div class="section card">
+      <h3>Statement</h3>
+      <table class="data">
+        <thead><tr><th>Entry</th><th>Detail</th><th class="num">Amount</th><th class="num">Balance</th><th class="num">When</th></tr></thead>
+        <tbody>${wallet.statement
+          .map(
+            (e) => `<tr>
+              <td>${esc(kindLabel(e.kind))}${e.account === 'bonus' ? ' <span class="tag">bonus</span>' : ''}</td>
+              <td class="muted">${esc(e.marketQuestion ? e.marketQuestion.slice(0, 46) : e.memo)}</td>
+              <td class="num mono ${e.amount >= 0 ? 'pos' : 'neg'}">${e.amount >= 0 ? '+' : '−'}${usd(Math.abs(e.amount))}</td>
+              <td class="num mono faint">${e.balanceAfter === null ? '' : usd(e.balanceAfter)}</td>
+              <td class="num faint">${timeAgo(e.createdAt)}</td>
+            </tr>`,
+          )
+          .join('')}</tbody>
+      </table>
+    </div>
+
+    <div class="section card">
+      <h3>Play limits</h3>
+      <div class="muted" style="margin-bottom:12px">Set your own ceiling, or take a break. Limits apply immediately and a break cannot be lifted early.</div>
+      <div class="row-2">
+        <div class="field">
+          <label for="lim-deposit">24-hour deposit limit</label>
+          <input class="control" id="lim-deposit" type="number" min="0" step="10" value="${
+            wallet.profile.depositLimit ?? ''
+          }" placeholder="No personal limit" />
+        </div>
+        <div class="field">
+          <label for="lim-exclude">Take a break</label>
+          <select class="control" id="lim-exclude" style="width:100%">
+            <option value="">Keep trading</option>
+            <option value="1">24 hours</option>
+            <option value="7">7 days</option>
+            <option value="30">30 days</option>
+            <option value="180">6 months</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn sm ghost" id="lim-save" style="margin-top:10px">Save limits</button>
+    </div>
+  `);
+
+  const el = app();
+  el.querySelectorAll('[data-dep]').forEach((b) => {
+    b.onclick = () => {
+      el.querySelector('#dep-amount').value = b.dataset.dep;
+    };
+  });
+  el.querySelector('#dep-go').onclick = async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      const { checkoutUrl } = await api('/api/wallet/deposit', {
+        method: 'POST',
+        body: { amount: Number(el.querySelector('#dep-amount').value) },
+      });
+      location.href = checkoutUrl;
+    } catch (err) {
+      toast(err.message, 'error');
+      event.currentTarget.disabled = false;
+    }
+  };
+  el.querySelector('#wd-go').onclick = async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      const res = await api('/api/wallet/withdraw', {
+        method: 'POST',
+        body: { amount: Number(el.querySelector('#wd-amount').value), destination: el.querySelector('#wd-dest').value },
+      });
+      S.user = res.user;
+      renderNav();
+      toast(`Withdrawal of ${usd(res.withdrawal.net)} requested. An admin will review it.`, 'success');
+      viewWallet();
+    } catch (err) {
+      toast(err.message, 'error');
+      event.currentTarget.disabled = false;
+    }
+  };
+  el.querySelector('#ref-copy').onclick = async () => {
+    const input = el.querySelector('#ref-link');
+    input.select();
+    try {
+      await navigator.clipboard.writeText(input.value);
+      toast('Invite link copied.', 'success');
+    } catch {
+      toast('Select and copy the link.', '');
+    }
+  };
+  el.querySelector('#lim-save').onclick = async () => {
+    const excludeDays = el.querySelector('#lim-exclude').value;
+    if (excludeDays && !confirm(`Take a break for ${excludeDays} day(s)? This cannot be undone early.`)) return;
+    try {
+      await api('/api/limits', {
+        method: 'POST',
+        body: { depositLimit: el.querySelector('#lim-deposit').value || null, excludeDays: excludeDays || undefined },
+      });
+      toast('Limits saved.', 'success');
+      viewWallet();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+}
+
+const KIND_LABELS = {
+  deposit: 'Deposit',
+  withdrawal_hold: 'Withdrawal',
+  withdrawal_refund: 'Withdrawal returned',
+  trade_buy: 'Bought shares',
+  trade_sell: 'Sold shares',
+  payout: 'Settlement payout',
+  refund: 'Market cancelled',
+  subsidy: 'Liquidity posted',
+  subsidy_return: 'Liquidity returned',
+  creator_fee: 'Creator fee earned',
+  listing_fee: 'Listing fee',
+  welcome_bonus: 'Welcome bonus',
+  daily_bonus: 'Daily bonus',
+  referral: 'Referral bonus',
+};
+const kindLabel = (kind) => KIND_LABELS[kind] ?? kind.replace(/_/g, ' ');
+
+/* ================================================================== *
+ * Sandbox checkout (mock payment provider)
+ * ================================================================== */
+
+function viewCheckout() {
+  const params = new URLSearchParams(location.search);
+  const reference = params.get('ref');
+  const amount = Number(params.get('amount') || 0);
+  if (!reference) return navigate('#/wallet');
+
+  setApp(`
+    <div class="card auth-card checkout">
+      <div class="checkout-brand">${esc(S.config?.brand?.name ?? 'Prophit')} · secure checkout</div>
+      <div class="checkout-amount">${usd(amount)}</div>
+      <div class="muted center" style="margin-bottom:18px">Sandbox payment — no real money moves. A live provider would take over from here.</div>
+      <div class="fake-card">
+        <div class="fake-card-row"><span>Card</span><b class="mono">4242 4242 4242 4242</b></div>
+        <div class="fake-card-row"><span>Expiry</span><b class="mono">12 / 30</b></div>
+        <div class="fake-card-row"><span>CVC</span><b class="mono">123</b></div>
+      </div>
+      <button class="btn" id="pay-now">Pay ${usd(amount)}</button>
+      <button class="btn ghost" id="pay-fail" style="margin-top:8px">Simulate a failed payment</button>
+      <div class="faint center" style="margin-top:12px;font-size:12px">Reference ${esc(reference)}</div>
+    </div>
+  `);
+
+  const finish = async (fail) => {
+    try {
+      const res = await api('/api/wallet/deposit/confirm', { method: 'POST', body: { reference, fail } });
+      if (fail) {
+        toast('Payment failed. Nothing was charged.', 'error');
+      } else {
+        S.user = res.user;
+        celebrate();
+        toast(`${usd(amount)} added to your balance.`, 'success');
+      }
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    // Leave the checkout path with a real navigation so the app boots clean.
+    location.replace('/#/wallet');
+  };
+  document.getElementById('pay-now').onclick = () => finish(false);
+  document.getElementById('pay-fail').onclick = () => finish(true);
+}
+
+/* ================================================================== *
+ * Admin: revenue, payouts and the fee dials
+ * ================================================================== */
+
+const SETTING_GROUPS = [
+  {
+    title: 'Revenue',
+    hint: 'These are the dials that decide what the house earns.',
+    keys: [
+      ['platformFeeRate', 'Platform fee', 'percent'],
+      ['creatorFeeRate', 'Creator fee', 'percent'],
+      ['listingFee', 'Market listing fee', 'money'],
+      ['withdrawalFeeRate', 'Withdrawal fee', 'percent'],
+      ['withdrawalFeeFlat', 'Withdrawal flat fee', 'money'],
+    ],
+  },
+  {
+    title: 'Payments',
+    keys: [
+      ['minDeposit', 'Minimum deposit', 'money'],
+      ['maxDeposit', 'Maximum deposit', 'money'],
+      ['minWithdrawal', 'Minimum withdrawal', 'money'],
+      ['dailyDepositLimit', 'Default 24h deposit cap', 'money'],
+      ['wageringMultiplier', 'Bonus turnover multiple', 'number'],
+    ],
+  },
+  {
+    title: 'Growth',
+    keys: [
+      ['welcomeBonus', 'Welcome bonus', 'money'],
+      ['dailyBonusBase', 'Daily bonus per streak day', 'money'],
+      ['dailyBonusMax', 'Daily bonus cap', 'money'],
+      ['referralBonus', 'Referral bonus', 'money'],
+    ],
+  },
+];
+
+function revenueBars(series) {
+  if (!series.length) return '<div class="muted">No revenue booked yet.</div>';
+  const max = Math.max(...series.map((d) => d.total), 0.01);
+  return `<div class="bars">${series
+    .map(
+      (d) =>
+        `<div class="bar-col" title="${esc(d.day)}: ${usd(d.total)}">
+          <span style="height:${Math.max(2, (d.total / max) * 100)}%"></span>
+        </div>`,
+    )
+    .join('')}</div>
+    <div class="bars-axis"><span>${esc(series[0].day)}</span><span>${esc(series.at(-1).day)}</span></div>`;
+}
+
+async function viewAdmin() {
+  if (!S.user?.isAdmin) {
+    setApp('<div class="empty">Admins only.</div>');
+    return;
+  }
+  setApp('<div class="loading">Loading control room…</div>');
+  const data = await api('/api/admin/overview');
+
+  setApp(`
+    <div class="page-head"><div>
+      <h1>Control room</h1>
+      <div class="muted">Where the money is, and the dials that decide how much of it you keep.</div>
+    </div></div>
+
+    <div class="stat-row">
+      <div class="stat accent"><div class="k">Treasury</div><div class="v">${usd(data.treasury)}</div><div class="faint" style="font-size:12px">all-time platform revenue</div></div>
+      <div class="stat"><div class="k">Revenue 24h</div><div class="v pos">${usd(data.revenue24h)}</div></div>
+      <div class="stat"><div class="k">Deposits</div><div class="v">${usd(data.deposits.total)}</div><div class="faint" style="font-size:12px">${data.deposits.count} payments</div></div>
+      <div class="stat"><div class="k">Paid out</div><div class="v">${usd(data.withdrawals.total)}</div><div class="faint" style="font-size:12px">${data.withdrawals.count} withdrawals</div></div>
+      <div class="stat"><div class="k">User balances</div><div class="v">${usd(data.liabilities)}</div><div class="faint" style="font-size:12px">what you owe traders</div></div>
+      <div class="stat"><div class="k">Volume 24h</div><div class="v">${usd(data.stats.volume24h, 0)}</div><div class="faint" style="font-size:12px">${data.stats.trades24h} trades</div></div>
+    </div>
+
+    <div class="row-2">
+      <div class="card">
+        <h3>Revenue, last 30 days</h3>
+        ${revenueBars(data.revenueByDay)}
+      </div>
+      <div class="card">
+        <h3>Where it comes from</h3>
+        <table class="data">
+          <thead><tr><th>Source</th><th class="num">Events</th><th class="num">Total</th></tr></thead>
+          <tbody>${
+            data.revenueByKind.length
+              ? data.revenueByKind
+                  .map(
+                    (r) =>
+                      `<tr><td>${esc(kindLabel(r.kind))}</td><td class="num mono">${r.count}</td><td class="num mono pos">${usd(r.total)}</td></tr>`,
+                  )
+                  .join('')
+              : '<tr><td colspan="3" class="muted">Nothing yet.</td></tr>'
+          }</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section card">
+      <h3>Pending withdrawals (${data.pendingWithdrawals.length})</h3>
+      ${
+        data.pendingWithdrawals.length
+          ? `<table class="data">
+              <thead><tr><th>User</th><th>Destination</th><th class="num">Gross</th><th class="num">Fee</th><th class="num">Net</th><th class="num">Requested</th><th></th></tr></thead>
+              <tbody>${data.pendingWithdrawals
+                .map(
+                  (w) => `<tr>
+                    <td><a href="#/user/${esc(w.user.username)}">${esc(w.user.username)}</a></td>
+                    <td class="mono faint">${esc(w.destination.slice(0, 28))}</td>
+                    <td class="num mono">${usd(w.amount)}</td>
+                    <td class="num mono">${usd(w.fee)}</td>
+                    <td class="num mono">${usd(w.net)}</td>
+                    <td class="num faint">${timeAgo(w.createdAt)}</td>
+                    <td class="num" style="white-space:nowrap">
+                      <button class="btn sm" data-approve="${w.id}">Approve</button>
+                      <button class="btn sm ghost" data-reject="${w.id}">Reject</button>
+                    </td>
+                  </tr>`,
+                )
+                .join('')}</tbody>
+            </table>`
+          : '<div class="muted">Nothing waiting for review.</div>'
+      }
+    </div>
+
+    <div class="section card">
+      <h3>Economics</h3>
+      <div class="muted" style="margin-bottom:14px">Changes take effect on the very next trade. Fees are charged on trade notional and split between the house and the market creator.</div>
+      ${SETTING_GROUPS.map(
+        (group) => `<div class="setting-group">
+          <div class="setting-title">${esc(group.title)}</div>
+          ${group.hint ? `<div class="faint" style="font-size:12.5px;margin-bottom:10px">${esc(group.hint)}</div>` : ''}
+          <div class="setting-grid">
+            ${group.keys
+              .map(
+                ([key, label, type]) => `<div class="field">
+                  <label for="set-${key}">${esc(label)}${type === 'percent' ? ' (%)' : ''}</label>
+                  <input class="control" id="set-${key}" data-setting="${key}" data-type="${type}" type="number"
+                         step="${type === 'percent' ? '0.05' : '1'}" min="0"
+                         value="${type === 'percent' ? (data.settings[key] * 100).toFixed(2) : data.settings[key]}" />
+                </div>`,
+              )
+              .join('')}
+          </div>
+        </div>`,
+      ).join('')}
+      <div class="setting-preview" id="fee-preview"></div>
+      <button class="btn" id="settings-save" style="width:auto;padding-inline:26px;margin-top:12px">Save economics</button>
+    </div>
+  `);
+
+  const el = app();
+  const updatePreview = () => {
+    const platform = Number(el.querySelector('#set-platformFeeRate').value) / 100;
+    const creator = Number(el.querySelector('#set-creatorFeeRate').value) / 100;
+    const volume = data.stats.volume24h || 0;
+    el.querySelector('#fee-preview').innerHTML = `
+      Total fee <b>${pct(platform + creator, 2)}</b> per trade — house keeps <b>${pct(platform, 2)}</b>,
+      creators get <b>${pct(creator, 2)}</b>.
+      At yesterday's ${usd(volume, 0)} of volume that is <b class="pos">${usd(volume * platform)}</b> to the treasury per day,
+      about <b class="pos">${usd(volume * platform * 365, 0)}</b> a year.`;
+  };
+  el.querySelectorAll('[data-setting]').forEach((input) => {
+    input.oninput = updatePreview;
+  });
+  updatePreview();
+
+  el.querySelector('#settings-save').onclick = async (event) => {
+    event.currentTarget.disabled = true;
+    const patch = {};
+    el.querySelectorAll('[data-setting]').forEach((input) => {
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) return;
+      patch[input.dataset.setting] = input.dataset.type === 'percent' ? value / 100 : value;
+    });
+    try {
+      await api('/api/admin/settings', { method: 'POST', body: patch });
+      S.config = await api('/api/config');
+      toast('Economics updated. Live from the next trade.', 'success');
+      viewAdmin();
+    } catch (err) {
+      toast(err.message, 'error');
+      event.currentTarget.disabled = false;
+    }
+  };
+
+  const decide = async (id, approve) => {
+    try {
+      await api(`/api/admin/withdrawals/${id}`, { method: 'POST', body: { approve } });
+      toast(approve ? 'Withdrawal approved and paid.' : 'Withdrawal rejected and refunded.', 'success');
+      viewAdmin();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+  el.querySelectorAll('[data-approve]').forEach((b) => (b.onclick = () => decide(b.dataset.approve, true)));
+  el.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = () => decide(b.dataset.reject, false)));
+}
+
+/* ================================================================== *
+ * Achievements strip, used on profiles
+ * ================================================================== */
+
+function achievementStrip(achievements) {
+  if (!achievements?.length) return '';
+  return `<div class="section card">
+      <h3>Achievements (${achievements.filter((a) => a.earned).length}/${achievements.length})</h3>
+      <div class="badges">
+        ${achievements
+          .map(
+            (a) => `<div class="badge ${a.earned ? 'earned' : ''}" title="${esc(a.hint)}">
+              <span class="badge-icon">${a.icon}</span>
+              <span class="badge-title">${esc(a.title)}</span>
+              <span class="badge-hint">${esc(a.earned ? 'unlocked' : a.hint)}</span>
+            </div>`,
+          )
+          .join('')}
+      </div>
+    </div>`;
+}
+
 
 boot();
