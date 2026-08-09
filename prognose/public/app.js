@@ -348,6 +348,9 @@ function renderNav() {
       S.config?.settings?.welcomeBonus ?? 1000
     } free</a>`);
   }
+  if (!isStandalone() && (installPrompt || isIos())) {
+    links.push(`<button class="install-btn" id="install-btn" title="Install the app">⤓ Install</button>`);
+  }
   document.getElementById('nav').innerHTML = links.join('');
 
   const logout = document.getElementById('logout-btn');
@@ -360,6 +363,9 @@ function renderNav() {
     };
   const bonus = document.getElementById('bonus-btn');
   if (bonus) bonus.onclick = claimBonus;
+
+  const install = document.getElementById('install-btn');
+  if (install) install.onclick = promptInstall;
 
   const bell = document.getElementById('bell-btn');
   if (bell)
@@ -1391,6 +1397,52 @@ async function refreshUser() {
   renderNav();
 }
 
+/** Register the service worker so the app can be installed to a home screen. */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  // file:// and other insecure origins reject registration; ignore quietly.
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+/**
+ * iOS Safari has no install prompt, so we tell people how instead. Everywhere
+ * else we capture the browser's prompt and surface our own button.
+ */
+let installPrompt = null;
+
+function setupInstallPrompt() {
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    installPrompt = event;
+    renderNav();
+  });
+  window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    toast('Installed. Prophit now lives on your home screen.', 'success');
+    renderNav();
+  });
+}
+
+const isStandalone = () =>
+  window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+const isIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+async function promptInstall() {
+  if (installPrompt) {
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    installPrompt = null;
+    renderNav();
+    return;
+  }
+  if (isIos()) {
+    toast('In Safari: tap Share, then "Add to Home Screen".', '');
+    return;
+  }
+  toast('Use your browser menu to install this app.', '');
+}
+
 async function boot() {
   document.getElementById('search-form').onsubmit = (e) => {
     e.preventDefault();
@@ -1408,6 +1460,7 @@ async function boot() {
     }, 250);
   };
 
+  setupInstallPrompt();
   S.config = await api('/api/config').catch(() => null);
   if (S.config?.brand?.name) {
     document.title = `${S.config.brand.name} — ${S.config.brand.tagline}`;
@@ -1426,6 +1479,7 @@ async function boot() {
     route();
   }
 
+  registerServiceWorker();
   refreshTicker();
   refreshNotifications();
   setInterval(refreshTicker, 12_000);

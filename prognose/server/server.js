@@ -21,6 +21,7 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
   '.webmanifest': 'application/manifest+json',
+  '.mjs': 'text/javascript; charset=utf-8',
 };
 
 function sendJson(res, status, payload) {

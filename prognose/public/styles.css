@@ -1541,3 +1541,52 @@ table.data th.num {
     width: calc(100vw - 16px);
   }
 }
+
+/* ================================================================== *
+ * Installed-app polish: notch safe areas and the install button
+ * ================================================================== */
+
+.install-btn {
+  border: 1px solid var(--border) !important;
+  border-radius: 999px !important;
+  padding: 6px 13px !important;
+  font-weight: 650 !important;
+  color: var(--text) !important;
+}
+
+/* When launched from the home screen there is no browser chrome, so the
+   sticky header has to clear the status bar / notch itself. */
+@supports (padding: env(safe-area-inset-top)) {
+  @media (display-mode: standalone) {
+    .topbar {
+      padding-top: env(safe-area-inset-top);
+    }
+    .ticker {
+      top: calc(61px + env(safe-area-inset-top));
+    }
+  }
+  .topbar-inner,
+  .app,
+  .footer {
+    padding-left: max(20px, env(safe-area-inset-left));
+    padding-right: max(20px, env(safe-area-inset-right));
+  }
+  .footer {
+    padding-bottom: calc(40px + env(safe-area-inset-bottom));
+  }
+}
+
+/* On narrow phones the nav has more chips than fit on one line. */
+@media (max-width: 760px) {
+  .nav {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    row-gap: 8px;
+  }
+  .nav a.signin {
+    padding: 8px 13px;
+  }
+  .hero-stats {
+    gap: 16px 26px;
+  }
+}
