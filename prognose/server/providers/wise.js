@@ -208,6 +208,14 @@ export const wiseProvider = {
     }
   },
 
+  /**
+   * Wise's credit webhook carries no payment reference, so there is nothing to
+   * parse — it can only tell us to go and reconcile against the statement.
+   */
+  parseWebhook() {
+    return { reconcile: true };
+  },
+
   /** Quote → recipient → transfer → fund from the Wise balance. */
   async payout({ amount, destination, currency, fetchImpl = fetch }) {
     const config = wiseConfig();

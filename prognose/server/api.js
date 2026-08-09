@@ -47,6 +47,7 @@ route('GET', /^\/api\/config$/, (ctx) => {
     demoMode: CONFIG.demoMode,
     categories: logic.CATEGORIES,
     paymentProvider: payments.activeProvider().name,
+    payoutProvider: payments.activePayoutProvider().name,
     levels: engagement.LEVELS,
     achievements: engagement.ACHIEVEMENTS,
     feeRate: totalFeeRate(settings),
@@ -228,26 +229,37 @@ route('POST', /^\/api\/wallet\/withdraw$/, (ctx) => {
   return { withdrawal, user: auth.getUser(ctx.db, user.id) };
 });
 
-/** Provider callback. Signature-verified and idempotent by reference. */
+/**
+ * Provider callback. Signature-verified, then handed to the provider to
+ * interpret — each one describes its own events, so this stays generic.
+ */
 route('POST', /^\/api\/payments\/webhook$/, async (ctx) => {
   const provider = payments.activeProvider();
-  const signature = ctx.req.headers['x-signature'] || ctx.req.headers['x-signature-sha256'];
+  const signature =
+    ctx.req.headers['stripe-signature'] || ctx.req.headers['x-signature'] || ctx.req.headers['x-signature-sha256'];
   if (!provider.verify(ctx.rawBody, signature)) {
     throw unauthorized('Bad webhook signature.');
   }
+  if (ctx.req.headers['x-test-notification'] === 'true') return { ok: true, test: true };
 
-  // Wise's webhook only says "a credit landed on your balance" — it carries no
-  // payment reference, so the statement is what identifies the payer.
-  if (ctx.body.event_type || provider.name === 'wise') {
-    if (ctx.req.headers['x-test-notification'] === 'true') return { ok: true, test: true };
+  const outcome = provider.parseWebhook?.(ctx.body) ?? null;
+  // An event we do not act on still has to be acknowledged, or the provider
+  // will retry it forever.
+  if (!outcome) return { ok: true, ignored: ctx.body?.type ?? ctx.body?.event_type ?? true };
+
+  // Some rails cannot name the payer in the event itself; they trigger a
+  // statement reconciliation instead.
+  if (outcome.reconcile) {
     const result = await payments.reconcileDeposits(ctx.db);
     return { ok: true, ...result };
   }
 
-  const { reference, status } = ctx.body;
-  if (!reference) throw badRequest('Missing payment reference.');
-  const result = payments.settleDeposit(ctx.db, reference, { failed: status === 'failed' });
-  return { ok: true, alreadyProcessed: !!result.alreadyProcessed };
+  if (!outcome.reference) throw badRequest('Missing payment reference.');
+  const result = payments.settleDeposit(ctx.db, outcome.reference, {
+    failed: !!outcome.failed,
+    receivedAmount: outcome.receivedAmount ?? null,
+  });
+  return { ok: true, alreadyProcessed: !!result.alreadyProcessed, credited: result.credited ?? null };
 });
 
 /** Where to send a bank transfer, when the provider works that way. */

@@ -4,6 +4,7 @@ import { badRequest, forbidden, notFound, HttpError } from './errors.js';
 import { creditUser, debitUser, platformEntry, balances } from './ledger.js';
 import { notify } from './engagement.js';
 import { wiseProvider, wiseConfig, fetchStatement, matchDeposits } from './providers/wise.js';
+import { stripeProvider } from './providers/stripe.js';
 
 /* ------------------------------------------------------------------ *
  * Provider adapters
@@ -29,31 +30,32 @@ const mockProvider = {
     const b = Buffer.from(expected, 'utf8');
     return a.length === b.length && timingSafeEqual(a, b);
   },
+  /** Translate a webhook body into a deposit outcome. */
+  parseWebhook(body) {
+    if (!body?.reference) return null;
+    return { reference: body.reference, failed: body.status === 'failed' };
+  },
   /** Send money out. The mock marks it paid immediately. */
   async payout({ amount, destination }) {
     return { ok: true, providerRef: `mock_payout_${Date.now()}_${Math.round(amount)}`, destination };
   },
 };
 
-/**
- * Stripe would slot in here. Left unimplemented on purpose: wiring live card
- * processing to a market that is not yet licensed would be the wrong default.
- */
-const stripeProvider = {
-  name: 'stripe',
-  async createCheckout() {
-    throw new HttpError(501, 'The Stripe provider is not configured. Set PAYMENTS_PROVIDER=mock or implement stripeProvider.');
-  },
-  verify: () => false,
-  async payout() {
-    throw new HttpError(501, 'The Stripe provider is not configured.');
-  },
-};
-
 const providers = { mock: mockProvider, stripe: stripeProvider, wise: wiseProvider };
 
+/** Provider handling deposits. */
 export function activeProvider() {
   return providers[process.env.PAYMENTS_PROVIDER || 'mock'] ?? mockProvider;
+}
+
+/**
+ * Provider handling payouts, which is often a different one. Stripe is the
+ * best way to take card money in and cannot send it back out without Connect;
+ * Wise is the reverse. Running Stripe in and Wise out is a normal setup, so
+ * PAYOUT_PROVIDER can differ from PAYMENTS_PROVIDER.
+ */
+export function activePayoutProvider() {
+  return providers[process.env.PAYOUT_PROVIDER || process.env.PAYMENTS_PROVIDER || 'mock'] ?? mockProvider;
 }
 
 export const signWebhook = (rawBody) => createHmac('sha256', MOCK_SECRET).update(rawBody).digest('hex');
@@ -245,7 +247,7 @@ export async function decideWithdrawal(db, admin, id, approve, note = '') {
   if (row.status !== 'pending') throw badRequest('That withdrawal has already been settled.');
 
   if (approve) {
-    const result = await activeProvider().payout({
+    const result = await activePayoutProvider().payout({
       amount: row.net,
       destination: parseDestination(db, row),
     });

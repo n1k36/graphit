@@ -22,7 +22,7 @@ The first run seeds a demo database. Sign in as **`demo` / `demo123`** (an admin
 so the control room is visible), or create an account.
 
 ```bash
-npm test           # 50 tests: LMSR maths, API, payments, engagement
+npm test           # 79 tests: LMSR maths, API, payments, providers, engagement
 npm run dev        # restart on file changes
 npm run seed       # seed a database without starting the server
 ```
@@ -87,9 +87,53 @@ times credits the account exactly once (there is a test for this). Webhooks are
 HMAC signature-verified; unsigned ones are rejected with a 401.
 
 The bundled default is a **mock/sandbox** provider: a checkout page inside the
-app, no real money. A working **Wise Business** provider ships alongside it, and
-`stripeProvider` is stubbed. Swapping providers is one env var; nothing else in
-the codebase changes.
+app, no real money. Working **Stripe** and **Wise Business** providers ship
+alongside it. Swapping is one env var; nothing else in the codebase changes.
+
+Deposits and payouts can use *different* providers, because most rails are good
+at one direction only:
+
+```
+PAYMENTS_PROVIDER=stripe   # cards, Apple Pay, instant confirmation
+PAYOUT_PROVIDER=wise       # actually sends money to a customer's IBAN
+```
+
+### The Stripe provider
+
+`PAYMENTS_PROVIDER=stripe`. Hosted Checkout, so Stripe owns the card form, 3-D
+Secure and PCI scope. Talks to the REST API with `fetch` and form encoding, so
+the zero-dependency rule survives — the official SDK is a wrapper over exactly
+these calls.
+
+Webhooks are verified the way Stripe specifies: HMAC-SHA256 over
+`${timestamp}.${rawBody}`, compared in constant time, **and the timestamp is
+checked** against a 5-minute window so a captured webhook cannot be replayed
+later. The amount credited is Stripe's `amount_total`, not the amount requested,
+because currency conversion and discounts move it.
+
+Stripe **cannot pay customers out** without Connect — every user would need to
+be onboarded as a connected account with its own identity verification. Rather
+than fake that, `payout()` throws a 501 that names the fix. Pair it with
+`PAYOUT_PROVIDER=wise`.
+
+| Variable | Meaning |
+|---|---|
+| `STRIPE_SECRET_KEY` | `sk_test_…` or `sk_live_…` |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_…` from the webhook endpoint |
+| `STRIPE_CURRENCY` | defaults to `eur` |
+| `PUBLIC_BASE_URL` | where Stripe returns the user afterwards |
+
+> **The same caveat as every processor.** Stripe's restricted-business rules
+> cover gambling and betting: real-money wagering needs prior written approval
+> from Stripe *and* the licences for each market you serve. This is not Stripe
+> being awkward — it flows from the card networks' rules for the gambling
+> merchant category, which is why Wise, PayPal and everyone else say the same
+> thing. Shopping for a friendlier processor is not the fix; being licensed, or
+> not taking real-money bets, is.
+>
+> Stripe is entirely usable **today** for a play-money build: subscriptions,
+> cosmetic upgrades, boosted market listings. That is ordinary commerce, and it
+> uses this exact code path.
 
 ### The Wise provider
 
@@ -202,7 +246,7 @@ AMM's equity and the treasury, and checks the total equals bonuses issued plus
 deposits minus withdrawals. If any code path ever created or destroyed a cent,
 that test fails.
 
-Other things the 50 tests pin down: idempotent deposits, signature-checked
+Other things the 79 tests pin down: idempotent deposits, signature-checked
 webhooks, the fee split matching the configured rates, withdrawal holds and
 refunds, wagering gates, streak progression, referral payouts, self-exclusion
 blocking trades, admin-only access, and the LMSR invariants above.
@@ -296,7 +340,8 @@ than for most apps:
 | `PORT` | `4173` | HTTP port |
 | `PROGNOSE_DB` | `data/prognose.db` | SQLite file, or `:memory:` |
 | `BRAND_NAME` / `BRAND_TAGLINE` | Prophit / Wette auf alles. | Product name |
-| `PAYMENTS_PROVIDER` | `mock` | `mock`, `wise` or `stripe` |
+| `PAYMENTS_PROVIDER` | `mock` | `mock`, `stripe` or `wise` — handles deposits |
+| `PAYOUT_PROVIDER` | falls back to `PAYMENTS_PROVIDER` | Provider that sends money out |
 | `PAYMENTS_WEBHOOK_SECRET` | `dev-webhook-secret` | HMAC key for webhooks |
 | `PROGNOSE_AUTH_LIMIT` | 10 signups / 20 logins per minute | Per-IP auth rate limit |
 
