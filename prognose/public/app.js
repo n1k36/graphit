@@ -1471,10 +1471,13 @@ async function boot() {
   await refreshUser();
   window.addEventListener('hashchange', route);
 
-  // The sandbox checkout lives on a real path, outside the hash router.
+  // Payment pages live on real paths, outside the hash router.
   if (location.pathname === '/checkout') {
     renderNav();
     viewCheckout();
+  } else if (location.pathname === '/transfer') {
+    renderNav();
+    await viewTransfer();
   } else {
     route();
   }
@@ -1931,6 +1934,70 @@ function viewCheckout() {
 }
 
 /* ================================================================== *
+ * Bank-transfer instructions (providers with no hosted checkout)
+ * ================================================================== */
+
+async function viewTransfer() {
+  const params = new URLSearchParams(location.search);
+  const reference = params.get('ref');
+  const amount = Number(params.get('amount') || 0);
+  if (!reference) return location.replace('/#/wallet');
+  if (!S.user) return location.replace('/#/login');
+
+  const { instructions } = await api('/api/wallet/instructions').catch(() => ({ instructions: null }));
+  if (!instructions) {
+    setApp('<div class="empty">This deposit method is not configured.</div>');
+    return;
+  }
+
+  const rows = [
+    ['Account holder', instructions.holder],
+    ['IBAN', instructions.iban],
+    ['BIC / SWIFT', instructions.bic],
+    ['Bank', instructions.bank],
+    ['Amount', `${usd(amount)} ${esc(instructions.currency ?? '')}`],
+  ].filter(([, value]) => value);
+
+  setApp(`
+    <div class="card auth-card checkout" style="max-width:460px">
+      <div class="checkout-brand">${esc(S.config?.brand?.name ?? 'Prophit')} · bank transfer</div>
+      <div class="checkout-amount">${usd(amount)}</div>
+      <div class="muted center" style="margin-bottom:18px">
+        Send a normal bank transfer with the reference below. It is the only thing that tells us the money is yours,
+        so it has to be included exactly.
+      </div>
+
+      <div class="reference-box">
+        <div class="faint" style="font-size:11.5px;letter-spacing:.08em;text-transform:uppercase">Payment reference</div>
+        <div class="reference-value mono" id="ref-value">${esc(reference)}</div>
+        <button class="btn sm ghost" id="copy-ref">Copy reference</button>
+      </div>
+
+      <div class="fake-card" style="margin-top:16px">
+        ${rows
+          .map(([label, value]) => `<div class="fake-card-row"><span>${esc(label)}</span><b class="mono">${esc(value)}</b></div>`)
+          .join('')}
+      </div>
+
+      <div class="notice warn" style="margin-bottom:14px">
+        Bank transfers are not instant. Your balance updates once the money arrives — usually the same day for SEPA,
+        longer across borders. You can close this page.
+      </div>
+      <a class="btn" href="/#/wallet" style="display:block;text-align:center;text-decoration:none">Back to wallet</a>
+    </div>
+  `);
+
+  document.getElementById('copy-ref').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(reference);
+      toast('Reference copied. Paste it into your transfer.', 'success');
+    } catch {
+      toast('Copy the reference by hand — it must match exactly.', '');
+    }
+  };
+}
+
+/* ================================================================== *
  * Admin: revenue, payouts and the fee dials
  * ================================================================== */
 
@@ -2026,6 +2093,17 @@ async function viewAdmin() {
         </table>
       </div>
     </div>
+
+    ${
+      S.config?.paymentProvider === 'wise'
+        ? `<div class="section card">
+            <h3>Bank reconciliation</h3>
+            <div class="muted" style="margin-bottom:10px">Match incoming transfers against pending deposits. Runs automatically on every webhook; use this if one was missed.</div>
+            <button class="btn sm" id="reconcile-btn">Reconcile now</button>
+            <span id="reconcile-result" class="muted" style="margin-left:10px"></span>
+          </div>`
+        : ''
+    }
 
     <div class="section card">
       <h3>Pending withdrawals (${data.pendingWithdrawals.length})</h3>
@@ -2124,6 +2202,22 @@ async function viewAdmin() {
       toast(err.message, 'error');
     }
   };
+  const reconcile = el.querySelector('#reconcile-btn');
+  if (reconcile)
+    reconcile.onclick = async () => {
+      reconcile.disabled = true;
+      try {
+        const result = await api('/api/admin/reconcile', { method: 'POST', body: { days: 7 } });
+        el.querySelector('#reconcile-result').textContent = result.skipped
+          ? result.skipped
+          : `Scanned ${result.scanned ?? 0} entries, settled ${result.settled?.length ?? 0}.`;
+        if (result.settled?.length) toast(`Settled ${result.settled.length} deposit(s).`, 'success');
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+      reconcile.disabled = false;
+    };
+
   el.querySelectorAll('[data-approve]').forEach((b) => (b.onclick = () => decide(b.dataset.approve, true)));
   el.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = () => decide(b.dataset.reject, false)));
 }

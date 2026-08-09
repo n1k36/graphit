@@ -3,6 +3,7 @@ import { getSettings, nowIso, transaction } from './db.js';
 import { badRequest, forbidden, notFound, HttpError } from './errors.js';
 import { creditUser, debitUser, platformEntry, balances } from './ledger.js';
 import { notify } from './engagement.js';
+import { wiseProvider, wiseConfig, fetchStatement, matchDeposits } from './providers/wise.js';
 
 /* ------------------------------------------------------------------ *
  * Provider adapters
@@ -49,7 +50,7 @@ const stripeProvider = {
   },
 };
 
-const providers = { mock: mockProvider, stripe: stripeProvider };
+const providers = { mock: mockProvider, stripe: stripeProvider, wise: wiseProvider };
 
 export function activeProvider() {
   return providers[process.env.PAYMENTS_PROVIDER || 'mock'] ?? mockProvider;
@@ -111,7 +112,7 @@ export async function createDeposit(db, user, amount) {
  * Credit a completed deposit. Idempotent by payment reference: a webhook
  * replayed ten times still credits the account exactly once.
  */
-export function settleDeposit(db, reference, { failed = false } = {}) {
+export function settleDeposit(db, reference, { failed = false, receivedAmount = null } = {}) {
   return transaction(db, () => {
     const intent = db.prepare('SELECT * FROM payment_intents WHERE reference = ?').get(String(reference ?? ''));
     if (!intent) throw notFound('Unknown payment reference.');
@@ -122,22 +123,61 @@ export function settleDeposit(db, reference, { failed = false } = {}) {
       return { intent, failed: true };
     }
 
-    db.prepare("UPDATE payment_intents SET status = 'succeeded', completed_at = ? WHERE id = ?").run(nowIso(), intent.id);
-    creditUser(db, intent.user_id, intent.amount, {
+    // With a bank transfer the payer types the amount, so what arrives is not
+    // always what was asked for. Credit what actually landed.
+    const credited =
+      Number.isFinite(receivedAmount) && receivedAmount > 0 ? Math.round(receivedAmount * 100) / 100 : intent.amount;
+    db.prepare("UPDATE payment_intents SET status = 'succeeded', amount = ?, completed_at = ? WHERE id = ?").run(
+      credited,
+      nowIso(),
+      intent.id,
+    );
+    creditUser(db, intent.user_id, credited, {
       kind: 'deposit',
       ref: intent.reference,
       memo: `Deposit via ${intent.provider}`,
     });
-    db.prepare('UPDATE profiles SET deposited = deposited + ? WHERE user_id = ?').run(intent.amount, intent.user_id);
+    db.prepare('UPDATE profiles SET deposited = deposited + ? WHERE user_id = ?').run(credited, intent.user_id);
     notify(db, intent.user_id, {
       kind: 'deposit',
       title: 'Deposit confirmed',
-      body: `$${intent.amount.toFixed(2)} is ready to trade.`,
+      body: `$${credited.toFixed(2)} is ready to trade.`,
       href: '#/wallet',
-      amount: intent.amount,
+      amount: credited,
     });
-    return { intent, credited: intent.amount };
+    return { intent, credited };
   });
+}
+
+/**
+ * Bank-transfer reconciliation: ask the provider for its recent statement and
+ * settle any pending intent whose reference appears in it.
+ *
+ * Safe to run repeatedly and on a timer — settleDeposit is idempotent, so an
+ * already-booked credit is skipped. This is the real safety net: a missed
+ * webhook must never mean a customer's money disappears.
+ */
+export async function reconcileDeposits(db, { days = 7, fetchImpl = fetch } = {}) {
+  if (activeProvider().name !== 'wise') return { skipped: 'reconciliation only applies to bank-transfer providers' };
+  const pending = db
+    .prepare("SELECT reference, amount, user_id FROM payment_intents WHERE status = 'pending' AND provider = 'wise'")
+    .all();
+  if (!pending.length) return { pending: 0, scanned: 0, settled: [] };
+
+  const transactions = await fetchStatement(wiseConfig(), { days, fetchImpl });
+  const settled = [];
+  for (const match of matchDeposits(pending, transactions)) {
+    const result = settleDeposit(db, match.reference, { receivedAmount: match.received });
+    if (!result.alreadyProcessed) settled.push({ reference: match.reference, credited: result.credited });
+  }
+  return { pending: pending.length, scanned: transactions.length, settled };
+}
+
+/** Bank details a payer needs, for the in-app transfer instructions page. */
+export function depositInstructions() {
+  if (activeProvider().name !== 'wise') return null;
+  const { account, currency } = wiseConfig();
+  return { ...account, currency };
 }
 
 /* ------------------------------------------------------------------ *
@@ -205,7 +245,10 @@ export async function decideWithdrawal(db, admin, id, approve, note = '') {
   if (row.status !== 'pending') throw badRequest('That withdrawal has already been settled.');
 
   if (approve) {
-    const result = await activeProvider().payout({ amount: row.net, destination: row.destination });
+    const result = await activeProvider().payout({
+      amount: row.net,
+      destination: parseDestination(db, row),
+    });
     if (!result?.ok) throw new HttpError(502, 'The payment provider refused the payout.');
   }
 
@@ -235,6 +278,26 @@ export async function decideWithdrawal(db, admin, id, approve, note = '') {
     }
     return { id: row.id, status: approve ? 'paid' : 'rejected' };
   });
+}
+
+/**
+ * Turn the free-text payout destination into the fields a bank rail needs.
+ * People type things like "Max Mustermann, DE89 3704 0044 0532 0130 00".
+ */
+export function parseDestination(db, row) {
+  const raw = String(row.destination ?? '');
+  const compact = raw.replace(/\s+/g, '');
+  const iban = /([A-Z]{2}[0-9]{2}[A-Z0-9]{10,30})/i.exec(compact)?.[1]?.toUpperCase() ?? null;
+  const name = raw.replace(/[A-Z]{2}[0-9]{2}[A-Z0-9 ]{10,40}/i, '').replace(/[,;]/g, ' ').trim();
+  const username = db.prepare('SELECT username FROM users WHERE id = ?').get(row.user_id)?.username ?? 'Customer';
+  return {
+    raw,
+    iban,
+    accountHolderName: name || username,
+    reference: `Payout ${row.id}`,
+    // Wise deduplicates on this, so a retried approval cannot pay out twice.
+    idempotencyKey: `withdrawal-${row.id}`,
+  };
 }
 
 export function listWithdrawals(db, { status = 'pending', limit = 100 } = {}) {

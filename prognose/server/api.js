@@ -229,15 +229,37 @@ route('POST', /^\/api\/wallet\/withdraw$/, (ctx) => {
 });
 
 /** Provider callback. Signature-verified and idempotent by reference. */
-route('POST', /^\/api\/payments\/webhook$/, (ctx) => {
+route('POST', /^\/api\/payments\/webhook$/, async (ctx) => {
   const provider = payments.activeProvider();
-  if (!provider.verify(ctx.rawBody, ctx.req.headers['x-signature'])) {
+  const signature = ctx.req.headers['x-signature'] || ctx.req.headers['x-signature-sha256'];
+  if (!provider.verify(ctx.rawBody, signature)) {
     throw unauthorized('Bad webhook signature.');
   }
+
+  // Wise's webhook only says "a credit landed on your balance" — it carries no
+  // payment reference, so the statement is what identifies the payer.
+  if (ctx.body.event_type || provider.name === 'wise') {
+    if (ctx.req.headers['x-test-notification'] === 'true') return { ok: true, test: true };
+    const result = await payments.reconcileDeposits(ctx.db);
+    return { ok: true, ...result };
+  }
+
   const { reference, status } = ctx.body;
   if (!reference) throw badRequest('Missing payment reference.');
   const result = payments.settleDeposit(ctx.db, reference, { failed: status === 'failed' });
   return { ok: true, alreadyProcessed: !!result.alreadyProcessed };
+});
+
+/** Where to send a bank transfer, when the provider works that way. */
+route('GET', /^\/api\/wallet\/instructions$/, (ctx) => {
+  requireUser(ctx);
+  return { instructions: payments.depositInstructions(), provider: payments.activeProvider().name };
+});
+
+/** Manual reconciliation, for when a webhook was missed. */
+route('POST', /^\/api\/admin\/reconcile$/, async (ctx) => {
+  requireAdmin(ctx);
+  return payments.reconcileDeposits(ctx.db, { days: Number(ctx.body.days) || 7 });
 });
 
 /* ------------------------------- admin ------------------------------ */

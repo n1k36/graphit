@@ -86,9 +86,56 @@ createDeposit → provider.createCheckout → user pays → webhook → settleDe
 times credits the account exactly once (there is a test for this). Webhooks are
 HMAC signature-verified; unsigned ones are rejected with a 401.
 
-The bundled provider is a **mock/sandbox** one: a checkout page inside the app,
-no real money. `stripeProvider` is stubbed alongside it with the three methods it
-needs. Swapping providers is one file; nothing else in the codebase changes.
+The bundled default is a **mock/sandbox** provider: a checkout page inside the
+app, no real money. A working **Wise Business** provider ships alongside it, and
+`stripeProvider` is stubbed. Swapping providers is one env var; nothing else in
+the codebase changes.
+
+### The Wise provider
+
+`PAYMENTS_PROVIDER=wise`. Two properties of Wise shape the whole integration:
+
+**Wise is not a card acquirer.** There is no hosted checkout and no "pay by
+card". Money only arrives as a bank transfer, so `createCheckout` returns an
+in-app page with your account details and a unique **payment reference**, and
+the deposit stays pending until the money lands.
+
+**Bank credits carry free text, not our payment id.** Wise's `balances#credit`
+webhook says only "a credit arrived" — it has no reference in it. So the webhook
+triggers *reconciliation*: pull the account statement, look for each pending
+deposit's reference inside the entries, and settle the ones that match.
+References are compared with all punctuation stripped, so `DEP 4CD0 0546` still
+matches `dep_4cd00546` when the payer retypes it by hand.
+
+Because a webhook can be missed entirely, reconciliation also runs on demand
+from **Control room → Bank reconciliation**, and is safe to put on a timer: it
+is idempotent, and a credit already booked is skipped. A missed webhook must
+never mean a customer's money disappears.
+
+Whatever the payer actually sent is what gets credited — ask for €200, send
+€173.45, and €173.45 is what lands, with the stored intent corrected to match.
+
+Payouts walk Wise's quote → recipient → transfer → fund sequence, including the
+strong-customer-authentication handshake (Wise answers 403 with a one-time token
+that must be signed with your private key and replayed). Each withdrawal sends a
+`customerTransactionId` derived from its row id, so a retried approval cannot pay
+out twice.
+
+| Variable | Meaning |
+|---|---|
+| `WISE_API_TOKEN` | API token (Wise → Settings → API tokens) |
+| `WISE_PROFILE_ID` | Your business profile id |
+| `WISE_ENV` | `sandbox` (default) or `live` |
+| `WISE_CURRENCY` | Balance to watch, e.g. `EUR` |
+| `WISE_PUBLIC_KEY` | Wise's webhook public key, for signature checks |
+| `WISE_PRIVATE_KEY` | Your SCA private key, needed to fund payouts |
+| `WISE_ACCOUNT_HOLDER` / `_IBAN` / `_BIC` / `_BANK` | Shown to payers |
+
+> **Before you rely on this:** Wise's acceptable use policy does not permit
+> gambling or betting businesses, and Wise Business is not a merchant acquirer —
+> it cannot take card payments at all. Get written confirmation from Wise about
+> your specific use case before building on it. The code is sound; the account
+> relationship is the risk.
 
 **Withdrawals** debit immediately (so the money cannot be spent while pending),
 then wait in an admin approval queue. Approving calls the provider payout;
@@ -249,7 +296,7 @@ than for most apps:
 | `PORT` | `4173` | HTTP port |
 | `PROGNOSE_DB` | `data/prognose.db` | SQLite file, or `:memory:` |
 | `BRAND_NAME` / `BRAND_TAGLINE` | Prophit / Wette auf alles. | Product name |
-| `PAYMENTS_PROVIDER` | `mock` | `mock` or `stripe` |
+| `PAYMENTS_PROVIDER` | `mock` | `mock`, `wise` or `stripe` |
 | `PAYMENTS_WEBHOOK_SECRET` | `dev-webhook-secret` | HMAC key for webhooks |
 | `PROGNOSE_AUTH_LIMIT` | 10 signups / 20 logins per minute | Per-IP auth rate limit |
 

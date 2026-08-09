@@ -1590,3 +1590,18 @@ table.data th.num {
     gap: 16px 26px;
   }
 }
+
+.reference-box {
+  background: var(--surface-2);
+  border: 1px dashed var(--accent);
+  border-radius: 12px;
+  padding: 14px;
+  text-align: center;
+}
+.reference-value {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin: 6px 0 10px;
+  overflow-wrap: anywhere;
+}
