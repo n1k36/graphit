@@ -7,8 +7,8 @@ export const ROOT = path.resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Everything brand-related lives here so a rename is a one-line change. */
 export const BRAND = {
-  name: process.env.BRAND_NAME || 'Prophit',
-  tagline: process.env.BRAND_TAGLINE || 'Wette auf alles.',
+  name: process.env.BRAND_NAME || 'Tell',
+  tagline: process.env.BRAND_TAGLINE || 'Was passiert als Nächstes?',
   currency: process.env.BRAND_CURRENCY || 'USD',
   symbol: '$',
 };

@@ -9,7 +9,7 @@
  * Bump CACHE_VERSION on release to evict the old shell.
  */
 
-const CACHE_VERSION = 'prophit-v1';
+const CACHE_VERSION = 'tell-v1';
 const SHELL = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {

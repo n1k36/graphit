@@ -2,8 +2,8 @@
  * Generates the app icons as PNGs, with no image library.
  *
  * The mark is the same one used in the favicon: a rounded blue tile with a
- * white "rising chart" polyline. Everything is drawn analytically from signed
- * distances, which gives clean anti-aliasing without supersampling.
+ * white bullseye — Tell hit the mark. Everything is drawn analytically from
+ * signed distances, which gives clean anti-aliasing without supersampling.
  *
  *   node tools/make-icons.mjs
  */
@@ -77,14 +77,14 @@ function sdRoundedBox(px, py, half, radius) {
   return outside + Math.min(Math.max(qx, qy), 0) - radius;
 }
 
-/** Distance from a point to a line segment. */
-function sdSegment(px, py, ax, ay, bx, by) {
-  const vx = bx - ax;
-  const vy = by - ay;
-  const wx = px - ax;
-  const wy = py - ay;
-  const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / (vx * vx + vy * vy)));
-  return Math.hypot(wx - vx * t, wy - vy * t);
+/** Distance to a circle's outline — negative inside the stroke. */
+function sdRing(px, py, radius, halfWidth) {
+  return Math.abs(Math.hypot(px, py) - radius) - halfWidth;
+}
+
+/** Distance to a filled disc. */
+function sdDisc(px, py, radius) {
+  return Math.hypot(px, py) - radius;
 }
 
 /** 0 → fully outside, 1 → fully inside, smooth across one pixel. */
@@ -92,13 +92,10 @@ const coverage = (distance) => Math.max(0, Math.min(1, 0.5 - distance));
 
 const BLUE = [45, 127, 255];
 const DEEP = [12, 74, 173];
-/** The favicon polyline, in its original 32×32 space. */
-const PATH = [
-  [7, 21],
-  [13, 14],
-  [18, 18],
-  [25, 9],
-];
+/** Bullseye geometry, in the original 32×32 space. */
+const RING_RADIUS = 9.5;
+const RING_STROKE = 2.4;
+const DOT_RADIUS = 3.4;
 
 function drawIcon(size, { padding = 0 } = {}) {
   const rgba = Buffer.alloc(size * size * 4);
@@ -106,7 +103,9 @@ function drawIcon(size, { padding = 0 } = {}) {
   const inset = padding * size;
   const half = size / 2 - inset;
   const radius = 8 * scale;
-  const strokeHalf = (2.8 * scale) / 2;
+  const ringRadius = RING_RADIUS * scale;
+  const ringHalf = (RING_STROKE * scale) / 2;
+  const dotRadius = DOT_RADIUS * scale;
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
@@ -120,14 +119,11 @@ function drawIcon(size, { padding = 0 } = {}) {
       const t = (cx + cy) / (2 * size);
       const bg = [0, 1, 2].map((i) => Math.round(BLUE[i] * (1 - t) + DEEP[i] * t));
 
-      // Distance to the polyline, with round joins and caps for free.
-      let line = Infinity;
-      for (let i = 0; i < PATH.length - 1; i++) {
-        const [ax, ay] = PATH[i];
-        const [bx, by] = PATH[i + 1];
-        line = Math.min(line, sdSegment(cx, cy, ax * scale, ay * scale, bx * scale, by * scale));
-      }
-      const stroke = coverage(line - strokeHalf);
+      // The mark: an outer ring with a filled centre.
+      const dx = cx - size / 2;
+      const dy = cy - size / 2;
+      const mark = Math.min(sdRing(dx, dy, ringRadius, ringHalf), sdDisc(dx, dy, dotRadius));
+      const stroke = coverage(mark);
 
       const offset = (y * size + x) * 4;
       for (let i = 0; i < 3; i++) rgba[offset + i] = Math.round(bg[i] * (1 - stroke) + 255 * stroke);

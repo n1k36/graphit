@@ -1418,7 +1418,7 @@ function setupInstallPrompt() {
   });
   window.addEventListener('appinstalled', () => {
     installPrompt = null;
-    toast('Installed. Prophit now lives on your home screen.', 'success');
+    toast(`Installed. ${S.config?.brand?.name ?? 'Tell'} now lives on your home screen.`, 'success');
     renderNav();
   });
 }
@@ -1565,7 +1565,7 @@ function heroSection(stats) {
       <div class="hero-glow"></div>
       <div class="hero-content">
         <div class="live-badge"><span class="dot"></span>LIVE</div>
-        <h1 class="hero-title">${esc(S.config?.brand?.tagline ?? 'Bet on anything.')}</h1>
+        <h1 class="hero-title">${esc(S.config?.brand?.tagline ?? 'Was passiert als Nächstes?')}</h1>
         <p class="hero-sub">Every price is a probability, set by people with money on the line. Trade it, or make your own market and earn the fees.</p>
         <div class="hero-stats">
           <div><b>${usd(stats.volume24h, 0)}</b><span>24h volume</span></div>
@@ -1899,7 +1899,7 @@ function viewCheckout() {
 
   setApp(`
     <div class="card auth-card checkout">
-      <div class="checkout-brand">${esc(S.config?.brand?.name ?? 'Prophit')} · secure checkout</div>
+      <div class="checkout-brand">${esc(S.config?.brand?.name ?? 'Tell')} · secure checkout</div>
       <div class="checkout-amount">${usd(amount)}</div>
       <div class="muted center" style="margin-bottom:18px">Sandbox payment — no real money moves. A live provider would take over from here.</div>
       <div class="fake-card">
@@ -1960,7 +1960,7 @@ async function viewTransfer() {
 
   setApp(`
     <div class="card auth-card checkout" style="max-width:460px">
-      <div class="checkout-brand">${esc(S.config?.brand?.name ?? 'Prophit')} · bank transfer</div>
+      <div class="checkout-brand">${esc(S.config?.brand?.name ?? 'Tell')} · bank transfer</div>
       <div class="checkout-amount">${usd(amount)}</div>
       <div class="muted center" style="margin-bottom:18px">
         Send a normal bank transfer with the reference below. It is the only thing that tells us the money is yours,

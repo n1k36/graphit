@@ -1,6 +1,6 @@
 {
-  "name": "Prophit — Wette auf alles.",
-  "short_name": "Prophit",
+  "name": "Tell — Was passiert als Nächstes?",
+  "short_name": "Tell",
   "description": "Trade prediction markets on anything. Every price is a probability.",
   "start_url": "/#/",
   "scope": "/",

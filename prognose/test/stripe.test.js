@@ -14,7 +14,7 @@ before(() => {
   process.env.STRIPE_SECRET_KEY = 'sk_test_key';
   process.env.STRIPE_WEBHOOK_SECRET = WEBHOOK_SECRET;
   process.env.STRIPE_CURRENCY = 'eur';
-  process.env.PUBLIC_BASE_URL = 'https://prophit.example';
+  process.env.PUBLIC_BASE_URL = 'https://tell.example';
 });
 
 after(() => {
@@ -186,6 +186,6 @@ test('deposits and payouts can run through different providers', () => {
 test('config reads the environment it was given', () => {
   const config = stripeConfig();
   assert.equal(config.currency, 'eur');
-  assert.equal(config.baseUrl, 'https://prophit.example');
+  assert.equal(config.baseUrl, 'https://tell.example');
   assert.equal(config.secretKey, 'sk_test_key');
 });

@@ -1,6 +1,6 @@
-# Prophit
+# Tell
 
-**Wette auf alles.** A prediction market platform: create markets on any question,
+**Was passiert als Nächstes?** A prediction market platform: create markets on any question,
 trade shares in the outcomes, settle them when the answer is known. Prices *are*
 probabilities — a share trading at 63¢ means the market thinks that outcome is
 63% likely, and it pays $1.00 if it happens.
@@ -28,7 +28,8 @@ npm run seed       # seed a database without starting the server
 ```
 
 The name lives in one place (`BRAND` in `server/db.js`, or the `BRAND_NAME`
-environment variable) — renaming the whole product is a one-line change.
+environment variable) — renaming the whole product is a one-line change. The
+icons are regenerated with `node tools/make-icons.mjs`.
 
 ---
 
@@ -293,8 +294,8 @@ origin, so installing to the home screen properly needs HTTPS.
 **Docker**, anywhere that runs containers:
 
 ```bash
-docker build -t prophit .
-docker run -p 4173:4173 -v prophit-data:/app/data prophit
+docker build -t tell .
+docker run -p 4173:4173 -v tell-data:/app/data tell
 ```
 
 The SQLite file lives in the mounted volume, so redeploys keep the data. Any
@@ -339,7 +340,7 @@ than for most apps:
 |---|---|---|
 | `PORT` | `4173` | HTTP port |
 | `PROGNOSE_DB` | `data/prognose.db` | SQLite file, or `:memory:` |
-| `BRAND_NAME` / `BRAND_TAGLINE` | Prophit / Wette auf alles. | Product name |
+| `BRAND_NAME` / `BRAND_TAGLINE` | Tell / Was passiert als Nächstes? | Product name |
 | `PAYMENTS_PROVIDER` | `mock` | `mock`, `stripe` or `wise` — handles deposits |
 | `PAYOUT_PROVIDER` | falls back to `PAYMENTS_PROVIDER` | Provider that sends money out |
 | `PAYMENTS_WEBHOOK_SECRET` | `dev-webhook-secret` | HMAC key for webhooks |
