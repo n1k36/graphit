@@ -247,10 +247,27 @@ AMM's equity and the treasury, and checks the total equals bonuses issued plus
 deposits minus withdrawals. If any code path ever created or destroyed a cent,
 that test fails.
 
-Other things the 79 tests pin down: idempotent deposits, signature-checked
+Other things the 100 tests pin down: idempotent deposits, signature-checked
 webhooks, the fee split matching the configured rates, withdrawal holds and
 refunds, wagering gates, streak progression, referral payouts, self-exclusion
 blocking trades, admin-only access, and the LMSR invariants above.
+
+**And a separate question the tests cannot answer: is the price honest?** That is
+what `harness/` is for.
+
+```bash
+npm run harness    # journeys, eval lab, load, browser
+npm run eval       # just the eval lab
+```
+
+The eval lab creates hundreds of markets with a *hidden true probability*, lets
+simulated traders with noisy beliefs trade them through the real engine, settles
+each one against a coin weighted by that truth, and grades the closing prices.
+Trading removes 65% of the initial error; the market closes 90% of the gap
+between a coin flip and perfect foresight; calibration sits inside the sampling
+noise of a perfect forecaster on the same sample. It also checks empirically
+that the maker never breaches its `b·ln(n)` loss bound and that the take rate
+matches the configured fee. See `harness/README.md`.
 
 Other design notes:
 
@@ -281,7 +298,12 @@ prognose/
 │   ├── server.js      HTTP server and static files
 │   └── seed.js        demo users, markets, trades, deposits
 ├── public/            index.html · app.js · styles.css  (no build step)
-└── test/              lmsr.test.js · api.test.js
+├── test/              unit and API suites, run by `npm test`
+└── harness/
+    ├── api/           end-to-end user journeys
+    ├── eval/          the eval lab, and the load run
+    ├── e2e/           browser flows (Playwright, optional)
+    └── run.mjs        the runner
 ```
 
 ## 7. Running it somewhere other than your laptop

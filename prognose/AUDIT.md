@@ -22,9 +22,9 @@ The application is **feature-complete for a play-money launch and not deployed**
 
 | | |
 |---|---|
-| Source | 10,125 lines across 24 files |
+| Source | 10,806 lines across 33 files |
 | Dependencies | **0** — runtime and dev |
-| Tests | **80 passing** |
+| Tests | **100 passing** |
 | Static checks | Parse, SQL-injection, secret-scan, XSS — all clean |
 | Commits this audit | 3 |
 | Defects found | **11** (5 correctness, 3 performance, 3 hardening) — all fixed |
@@ -157,11 +157,97 @@ Covered by 10 tests in `test/moderation.test.js`.
 
 ---
 
+## G. Harness and eval lab
+
+The suite proves each function is correct. It cannot tell you whether the
+*product* works, whether the **price is honest**, or where the thing falls over
+under load. `harness/` answers those three, and `npm run harness` runs all of
+it. Full documentation is in `harness/README.md`.
+
+Every suite boots its own server on an **ephemeral port with its own
+database**. That is a direct response to a real failure: a stale process
+holding the usual port served old code to three separate runs during
+development, and every one of them looked green.
+
+### What it measures
+
+| Suite | Question | Result |
+|---|---|---|
+| `api` | Do the journeys work end to end? | **29/29** — deposit, quote-matches-fill, bet visible on the card, settlement at $1.00/share, wagering gate, withdrawal approval, moderation |
+| `eval` | Does the price find the truth? | **8/8** — see below |
+| `load` | What breaks first? | **4/4** — 485 req/s, p99 92ms, 63 trades/s, no `SQLITE_BUSY`, books balanced |
+| `e2e` | Does the UI actually work? | **6/6** — renders, no console errors, no mobile overflow, and a trade in one session moves the price in another with no reload |
+| `sweep` | How much liquidity should a market carry? | opt-in; see the finding below |
+
+### The eval lab
+
+300 markets are created, each with a **hidden true probability**. Simulated
+traders — informed, casual and pure noise in fixed proportions — see that
+probability through their own noise and buy until the price has moved most of
+the way to what they believe. Every market then settles against a coin
+weighted by the hidden truth, and the closing prices are graded. It runs the
+real engine in process: real `executeTrade`, real ledger, real fee split.
+
+```
+mean |price − truth| at open      0.2061
+mean |price − truth| at close     0.0713     65% of the error removed
+Brier — always 50%                0.2500
+Brier — the market                0.2028
+Brier — perfect foresight         0.1977     skill 90.2%
+calibration error                 5.0%       against a 5.2% sampling-noise floor
+worst maker loss                  $232.60    bound b·ln(2) = $250.00
+realised take rate                0.600%     configured 0.600%
+```
+
+Calibration is judged against an **oracle** that prices every market at its
+exact true probability and settles on the same coin flips. It is perfectly
+calibrated by construction, so its residual error on the same sample *is* the
+sampling noise — and that is the floor the market is held to. Without it, a
+well-behaved market on 300 samples looks 5pp off and you go hunting for a bug
+that is not there.
+
+### Two findings the eval surfaced
+
+**1. Market creation is a paid service at current settings.** Averaged over 300
+markets at a $250 subsidy, the maker loses **$35.76** per market and earns
+**$4.63** in creator fees — net **−$31.13**. That is not a bug; subsidising an
+LMSR is how you pay for price discovery. But it means user-created markets are
+not self-sustaining, and the day you want users to create them the creator fee
+has to rise or the subsidy has to be borne by the house.
+
+**2. Price discovery is scale-free until capital binds.** Sweeping the subsidy
+across $50 → $30,000 with fixed trader bankrolls, the closing price is
+*identical* at $50 and $400: doubling liquidity doubles both the shares needed
+to move a cent and their cost, and the two cancel exactly. Accuracy only
+changes once orders start hitting the capital cap — and it **improves**, because
+a book nobody can single-handedly move forces the price to be an average of
+many traders rather than an echo of the last one. Best accuracy landed at
+roughly **five times the largest expected single order**; beyond that the price
+stops moving at all.
+
+Subsidy therefore buys resistance to a whale and buys volume. It does not buy
+accuracy on its own.
+
+### Keeping the harness honest
+
+10 tests in `test/harness.test.js` run in the normal suite: two harness servers
+never share a port, `withServer` restores the environment it changed, the
+simulation is byte-identical for a given seed, the books balance, the
+`b·ln(n)` bound holds, and the Brier and calibration maths match hand-worked
+numbers. A broken harness reports success, so the harness is tested too.
+
+Playwright is **never installed** by the harness — the zero-dependency promise
+holds. If it is absent the browser layer reports itself skipped rather than
+failed.
+
+---
+
 ## E. Deployment
 
 ### Verify before shipping
 ```bash
-npm run verify     # static checks + 80 tests
+npm run verify     # static checks + 100 tests
+npm run harness    # journeys, eval lab, load, browser
 ```
 
 ### Deploy

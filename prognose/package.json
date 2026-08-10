@@ -11,7 +11,12 @@
     "test": "node --no-warnings --test \"test/*.test.js\"",
     "check": "node tools/check.mjs",
     "icons": "node tools/make-icons.mjs",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm test",
+    "harness": "node --no-warnings harness/run.mjs",
+    "eval": "node --no-warnings harness/run.mjs eval",
+    "load": "node --no-warnings harness/run.mjs load",
+    "e2e": "node --no-warnings harness/run.mjs e2e",
+    "sweep": "node --no-warnings harness/run.mjs sweep"
   },
   "engines": {
     "node": ">=22.5.0"

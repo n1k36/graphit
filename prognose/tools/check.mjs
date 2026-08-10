@@ -32,6 +32,7 @@ const files = [
   ...(await sources('public')),
   ...(await sources('test')),
   ...(await sources('tools')),
+  ...(await sources('harness')),
 ];
 
 // 1. Everything must parse.
