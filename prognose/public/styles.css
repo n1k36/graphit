@@ -1878,3 +1878,94 @@ body.is-offline .headline-price .big { opacity: 0.65; }
     from { transform: translateY(100%); opacity: 1; }
   }
 }
+
+/* ================================================================== *
+ * Moderation
+ * ================================================================== */
+
+.report-link {
+  background: none;
+  border: 0;
+  color: var(--faint);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  align-self: flex-start;
+}
+.report-link:hover {
+  color: var(--no);
+  background: var(--no-soft);
+}
+.comment.removed {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.report-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+.report-reason {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.report-reason:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.report-reason input {
+  accent-color: var(--no);
+}
+.report-reason:has(input:checked) {
+  background: var(--no-soft);
+  color: var(--text);
+}
+
+.report-card {
+  margin-bottom: 12px;
+  border-left: 3px solid var(--no);
+}
+.report-card.dismissed,
+.report-card.actioned {
+  border-left-color: var(--border);
+  opacity: 0.72;
+}
+.report-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  margin-bottom: 12px;
+}
+.report-target {
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.report-text {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.report-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.badge-dot.inline {
+  position: static;
+  display: inline-grid;
+  margin-left: 6px;
+  vertical-align: middle;
+}

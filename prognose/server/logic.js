@@ -4,6 +4,7 @@ import * as lmsr from './lmsr.js';
 import { getUser } from './auth.js';
 import { creditUser, debitUser, platformEntry } from './ledger.js';
 import { publish } from './events.js';
+import { assertNotSuspended } from './moderation.js';
 import {
   addXp,
   assertNotExcluded,
@@ -60,6 +61,7 @@ export function serializeMarket(db, row, { includeTraders = false, creators = nu
     resolvedOutcome: row.resolved_outcome,
     resolvedAt: row.resolved_at,
     featured: !!row.featured,
+    hidden: !!row.hidden,
     isBinary: labels.length === 2 && labels[0].toLowerCase() === 'yes',
   };
 
@@ -84,6 +86,8 @@ export function listMarkets(db, opts = {}) {
     where.push('category = ?');
     params.push(category);
   }
+  // Hidden markets are gone from every listing, for everyone.
+  where.push('hidden = 0');
   const now = nowIso();
   if (status === 'open') {
     where.push("status = 'open' AND closes_at > ?");
@@ -293,6 +297,7 @@ export function createMarket(db, user, input) {
 
   return transaction(db, () => {
     assertNotExcluded(db, user.id);
+    assertNotSuspended(db, user.id);
     const fresh = db.prepare('SELECT balance, bonus_balance FROM users WHERE id = ?').get(user.id);
     const available = (fresh?.balance ?? 0) + (fresh?.bonus_balance ?? 0);
     const required = subsidy + listingFee;
@@ -401,9 +406,11 @@ export function executeTrade(db, user, marketId, input) {
   const result = transaction(db, () => {
     const row = marketRowById(db, marketId);
     if (row.status !== 'open') throw badRequest('This market has already been settled.');
+    if (row.hidden) throw badRequest('This market is under review and trading is frozen.');
     if (new Date(row.closes_at).getTime() <= Date.now()) throw badRequest('This market is closed for trading.');
 
     assertNotExcluded(db, user.id);
+    assertNotSuspended(db, user.id);
     const { outcome, side, size, q, labels } = parseTradeInput(db, row, user.id, input);
     if (size <= 0) throw badRequest('That trade rounds to zero shares.');
 
@@ -915,13 +922,15 @@ export function listComments(db, marketId) {
     .all(marketId)
     .map((c) => ({
       id: c.id,
-      body: c.body,
+      body: c.deleted ? '' : c.body,
+      removed: !!c.deleted,
       createdAt: c.created_at,
-      user: { id: c.user_id, username: c.username, avatar: c.avatar },
+      user: c.deleted ? { id: null, username: '—', avatar: '#5c6880' } : { id: c.user_id, username: c.username, avatar: c.avatar },
     }));
 }
 
 export function addComment(db, user, marketId, body) {
+  assertNotSuspended(db, user.id);
   const text = String(body ?? '').trim();
   if (!text) throw badRequest('Write something first.');
   if (text.length > 1000) throw badRequest('Comments are limited to 1000 characters.');

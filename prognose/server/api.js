@@ -5,6 +5,7 @@ import * as logic from './logic.js';
 import * as ledger from './ledger.js';
 import * as payments from './payments.js';
 import * as engagement from './engagement.js';
+import * as moderation from './moderation.js';
 
 /* Small fixed-window rate limiter, enough to slow down credential guessing.
  * Limits are read per call so tests (and operators) can raise them via
@@ -55,6 +56,8 @@ route('GET', /^\/api\/config$/, (ctx) => {
     brand: BRAND,
     demoMode: CONFIG.demoMode,
     categories: logic.CATEGORIES,
+    reportReasons: moderation.REPORT_REASONS,
+    moderationActions: moderation.MODERATION_ACTIONS,
     paymentProvider: payments.activeProvider().name,
     payoutProvider: payments.activePayoutProvider().name,
     levels: engagement.LEVELS,
@@ -102,7 +105,10 @@ route('POST', /^\/api\/auth\/logout$/, (ctx) => {
   return { ok: true };
 });
 
-route('GET', /^\/api\/me$/, (ctx) => ({ user: ctx.user }));
+route('GET', /^\/api\/me$/, (ctx) => ({
+  user: ctx.user,
+  suspension: ctx.user ? moderation.suspensionOf(ctx.db, ctx.user.id) : null,
+}));
 
 /* ------------------------------ markets ----------------------------- */
 
@@ -206,6 +212,49 @@ route('POST', /^\/api\/limits$/, (ctx) => ({
     excludeDays: ctx.body.excludeDays,
   }),
 }));
+
+/* ---------------------------- moderation ---------------------------- */
+
+route('POST', /^\/api\/reports$/, (ctx) => {
+  requireUser(ctx);
+  limitWrites(ctx, 'report', 20);
+  return moderation.fileReport(ctx.db, ctx.user, {
+    kind: ctx.body.kind,
+    targetId: ctx.body.targetId,
+    reason: ctx.body.reason,
+    note: ctx.body.note,
+  });
+});
+
+route('GET', /^\/api\/admin\/reports$/, (ctx) => {
+  requireAdmin(ctx);
+  return {
+    reports: moderation.listReports(ctx.db, { status: ctx.query.get('status') ?? 'open' }),
+    counts: moderation.reportCounts(ctx.db),
+  };
+});
+
+route('POST', /^\/api\/admin\/reports\/(\d+)$/, (ctx, id) => {
+  const admin = requireAdmin(ctx);
+  return moderation.resolveReport(ctx.db, admin, id, {
+    action: ctx.body.action,
+    note: ctx.body.note,
+    days: ctx.body.days,
+  });
+});
+
+route('POST', /^\/api\/admin\/markets\/([\w-]+)\/hide$/, (ctx, slug) => {
+  const admin = requireAdmin(ctx);
+  const row = logic.marketRowBySlug(ctx.db, slug);
+  return moderation.setMarketHidden(ctx.db, admin, row.id, !!ctx.body.hidden);
+});
+
+route('POST', /^\/api\/admin\/users\/(\d+)\/suspend$/, (ctx, id) => {
+  const admin = requireAdmin(ctx);
+  return ctx.body.lift
+    ? moderation.liftSuspension(ctx.db, admin, id)
+    : moderation.suspendUser(ctx.db, admin, id, { days: ctx.body.days, note: ctx.body.note });
+});
 
 /* ------------------------------ wallet ------------------------------ */
 
@@ -316,6 +365,7 @@ route('GET', /^\/api\/admin\/overview$/, (ctx) => {
     liabilities: db.prepare('SELECT COALESCE(SUM(balance + bonus_balance),0) AS total FROM users').get().total,
     settings: getSettings(db),
     settingKeys: Object.keys(DEFAULT_SETTINGS),
+    reports: moderation.reportCounts(db),
   };
 });
 

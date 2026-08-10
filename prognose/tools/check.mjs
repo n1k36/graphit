@@ -102,6 +102,8 @@ for (const match of app.matchAll(RISKY_PROPERTY)) {
   const after = app.slice(match.index + match[0].length, match.index + match[0].length + 8);
   if (after.startsWith('.length')) continue; // a number, not text
   if (/^\s*=[^=]/.test(after)) continue; // an assignment target, not a read
+  // A truthiness test decides whether to render; it is not itself rendered.
+  if (/^\s*(\?[^.]|&&|\|\||\)|,)/.test(after)) continue;
   const before = app.slice(Math.max(0, match.index - 12), match.index);
   if (before.endsWith('document')) continue; // a DOM property, not user data
   const call = enclosingCall(app, match.index);

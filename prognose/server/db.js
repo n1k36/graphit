@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS users (
   bonus_balance   REAL    NOT NULL DEFAULT 0,   -- promo credits, playable but not withdrawable
   realized_pnl    REAL    NOT NULL DEFAULT 0,
   is_admin        INTEGER NOT NULL DEFAULT 0,
+  /* Set by a moderator. Blocks trading, creating and commenting until it passes. */
+  suspended_until TEXT,
+  suspended_note  TEXT NOT NULL DEFAULT '',
   avatar          TEXT    NOT NULL DEFAULT '',
   created_at      TEXT    NOT NULL
 );
@@ -126,7 +129,10 @@ CREATE TABLE IF NOT EXISTS markets (
   status           TEXT NOT NULL DEFAULT 'open',
   resolved_outcome INTEGER,
   resolved_at      TEXT,
-  featured         INTEGER NOT NULL DEFAULT 0
+  featured         INTEGER NOT NULL DEFAULT 0,
+  /* Hidden markets vanish from listings and cannot be traded, but are not
+     deleted: money is at stake, so an admin still has to settle or cancel. */
+  hidden           INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -157,7 +163,8 @@ CREATE TABLE IF NOT EXISTS comments (
   market_id  INTEGER NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
   user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   body       TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  deleted    INTEGER NOT NULL DEFAULT 0
 );
 
 /* ---------------------------- money ---------------------------------- */
@@ -233,6 +240,28 @@ CREATE TABLE IF NOT EXISTS profiles (
   excluded_until TEXT
 );
 
+/* -------------------------- moderation -------------------------------- */
+
+/*
+ * Anyone can open a market on any question, which is exactly the liability.
+ * Reports are the intake queue; the actions an admin can take are recorded
+ * against the report so there is an audit trail rather than silent deletions.
+ */
+CREATE TABLE IF NOT EXISTS reports (
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT NOT NULL,              -- market | comment
+  target_id   INTEGER NOT NULL,
+  reporter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reason      TEXT NOT NULL,
+  note        TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'open',   -- open | actioned | dismissed
+  action      TEXT NOT NULL DEFAULT '',
+  resolved_by INTEGER REFERENCES users(id),
+  resolved_at TEXT,
+  created_at  TEXT NOT NULL,
+  UNIQUE (kind, target_id, reporter_id)
+);
+
 CREATE TABLE IF NOT EXISTS achievements (
   user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   key       TEXT NOT NULL,
@@ -266,6 +295,8 @@ CREATE INDEX IF NOT EXISTS idx_ledger_user    ON ledger(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger(account, created_at);
 CREATE INDEX IF NOT EXISTS idx_notif_user     ON notifications(user_id, read, id);
 CREATE INDEX IF NOT EXISTS idx_withdrawals    ON withdrawals(status, id);
+CREATE INDEX IF NOT EXISTS idx_reports_status  ON reports(status, id);
+CREATE INDEX IF NOT EXISTS idx_reports_target  ON reports(kind, target_id);
 `;
 
 export function defaultDbPath() {
@@ -298,6 +329,10 @@ export function openDb(file = defaultDbPath()) {
   // Databases created before the wallet existed pick the new columns up here.
   ensureColumn(db, 'users', 'bonus_balance', 'REAL NOT NULL DEFAULT 0');
   ensureColumn(db, 'markets', 'featured', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'markets', 'hidden', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'comments', 'deleted', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'users', 'suspended_until', 'TEXT');
+  ensureColumn(db, 'users', 'suspended_note', "TEXT NOT NULL DEFAULT ''");
   return db;
 }
 

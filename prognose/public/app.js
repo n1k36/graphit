@@ -123,6 +123,9 @@ const S = {
   chartRange: 'all',
   notifications: { unread: 0, items: [] },
   holdings: {},
+  suspension: null,
+  openReports: 0,
+  modFilter: 'open',
   stats: null,
   activity: [],
   page: null,
@@ -325,7 +328,14 @@ function renderNav() {
   if (S.user) {
     const level = S.user.level ?? { level: 1, name: 'Rookie', progress: 0 };
     links.push(link('#/portfolio', 'Portfolio'), `<a href="#/create">Create</a>`);
-    if (S.user.isAdmin) links.push(link('#/admin', 'Admin'));
+    if (S.user.isAdmin) {
+      links.push(link('#/admin', 'Admin'));
+      links.push(
+        `<a href="#/moderation" class="${route.path === '/moderation' ? 'active' : ''}">Reports${
+          S.openReports ? `<span class="badge-dot inline">${Math.min(S.openReports, 99)}</span>` : ''
+        }</a>`,
+      );
+    }
     if (S.user.bonusReady) {
       links.push(`<button class="bonus-pill" id="bonus-btn" title="Claim your daily bonus">🎁 Claim daily</button>`);
     } else if (S.user.streak > 0) {
@@ -504,6 +514,7 @@ async function viewMarkets() {
   const categories = ['All', ...(S.config?.categories ?? [])];
 
   setApp(`
+    ${suspensionBanner()}
     ${S.filters.search || S.filters.category !== 'All' ? '' : heroSection(stats)}
     <div class="page-head">
       <div>
@@ -609,10 +620,20 @@ function renderMarket() {
               <span>${market.traders ?? 0} traders</span>
               <span>${market.status === 'open' ? `closes ${dateLabel(market.closesAt)}` : `settled ${dateLabel(market.resolvedAt)}`}</span>
               <span>by ${esc(market.creator?.username ?? 'unknown')}</span>
+              <button class="report-link" id="report-market" title="Report this market">⚑ Report</button>
             </div>
           </div>
         </div>
 
+        ${suspensionBanner()}
+        ${
+          market.hidden
+            ? `<div class="notice warn" style="margin-bottom:14px">
+                <b>This market is hidden.</b> It is under review, does not appear in listings, and cannot be traded.
+                Existing positions still settle normally.
+               </div>`
+            : ''
+        }
         ${
           market.status === 'resolved'
             ? `<div class="notice win" style="margin-bottom:14px">Settled: <b>${esc(
@@ -709,12 +730,16 @@ function renderMarket() {
               : '<div class="muted"><a href="#/login" style="color:var(--accent)">Sign in</a> to join the discussion.</div>'
           }
           ${comments
-            .map(
-              (c) => `<div class="comment">${avatar(c.user)}
+            .map((c) =>
+              c.removed
+                ? `<div class="comment removed"><div class="body"><div class="text faint">This comment was removed by a moderator.</div></div></div>`
+                : `<div class="comment">${avatar(c.user)}
                 <div class="body">
                   <div class="who">${esc(c.user.username)} <span class="faint" style="font-weight:400">· ${timeAgo(c.createdAt)}</span></div>
                   <div class="text">${esc(c.body)}</div>
-                </div></div>`,
+                </div>
+                <button class="report-link" data-report-comment="${c.id}" title="Report this comment">⚑</button>
+              </div>`,
             )
             .join('')}
         </div>
@@ -748,6 +773,11 @@ function settlePanel(market) {
         </select>
         <button class="btn sm" id="settle-btn">Settle</button>
         <button class="btn sm ghost" id="cancel-btn">Cancel market</button>
+        ${
+          S.user?.isAdmin
+            ? `<button class="btn sm ghost" id="hide-market">${market.hidden ? 'Restore listing' : 'Hide from listings'}</button>`
+            : ''
+        }
       </div>
     </div>`;
 }
@@ -958,6 +988,23 @@ function wireMarketEvents(market) {
   });
   const submit = document.getElementById('trade-submit');
   if (submit) submit.onclick = submitTrade;
+
+  const reportMarket = document.getElementById('report-market');
+  if (reportMarket) reportMarket.onclick = () => openReport('market', market.id, market.question);
+  el.querySelectorAll('[data-report-comment]').forEach((b) => {
+    b.onclick = () => openReport('comment', Number(b.dataset.reportComment), 'This comment');
+  });
+  const hideBtn = document.getElementById('hide-market');
+  if (hideBtn)
+    hideBtn.onclick = async () => {
+      try {
+        const res = await api(`/api/admin/markets/${market.slug}/hide`, { method: 'POST', body: { hidden: !market.hidden } });
+        toast(res.hidden ? 'Market hidden and trading frozen.' : 'Market restored.', 'success');
+        refreshMarket();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    };
 
   const post = document.getElementById('comment-post');
   if (post)
@@ -1417,6 +1464,9 @@ async function route() {
       case 'admin':
         await viewAdmin();
         break;
+      case 'moderation':
+        await viewModeration();
+        break;
       case 'create':
         viewCreate();
         break;
@@ -1454,8 +1504,9 @@ async function refreshUser() {
     return;
   }
   try {
-    const { user } = await api('/api/me');
-    S.user = user;
+    const me = await api('/api/me');
+    S.user = me.user;
+    S.suspension = me.suspension ?? null;
   } catch {
     setToken(null);
   }
@@ -2141,6 +2192,8 @@ async function viewAdmin() {
   }
   setApp('<div class="loading">Loading control room…</div>');
   const data = await api('/api/admin/overview');
+  S.openReports = data.reports?.open ?? 0;
+  renderNav();
 
   setApp(`
     <div class="page-head"><div>
@@ -2791,6 +2844,187 @@ function holdersPanel(holders, market) {
           .join('')}</tbody>
       </table>
     </div>`;
+}
+
+
+
+/* ================================================================== *
+ * Moderation — reporting, and the queue behind it
+ * ================================================================== */
+
+/** Ask why, then file it. Kept to one small dialog: friction loses reports. */
+function openReport(kind, targetId, label) {
+  if (!S.user) {
+    toast('Sign in to report this.', '');
+    return navigate('#/login');
+  }
+  const reasons = S.config?.reportReasons ?? {};
+  document.getElementById('report-sheet')?.remove();
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    `<div class="sheet-backdrop" id="report-sheet" role="dialog" aria-modal="true" aria-label="Report">
+      <div class="sheet">
+        <button class="sheet-close" id="rp-close" aria-label="Close">×</button>
+        <h3 style="margin-bottom:4px">Report this ${esc(kind)}</h3>
+        <div class="muted" style="font-size:13.5px;margin-bottom:14px">${esc(label)}</div>
+        <div class="report-reasons">
+          ${Object.entries(reasons)
+            .map(
+              ([key, text], i) =>
+                `<label class="report-reason"><input type="radio" name="rp-reason" value="${esc(key)}" ${i === 0 ? 'checked' : ''}/><span>${esc(text)}</span></label>`,
+            )
+            .join('')}
+        </div>
+        <textarea class="control" id="rp-note" rows="2" maxlength="500" placeholder="Anything else we should know? (optional)"></textarea>
+        <button class="btn danger" id="rp-send" style="margin-top:12px">Send report</button>
+        <div class="qb-foot faint">A moderator reviews every report. Nothing is removed automatically.</div>
+      </div>
+    </div>`,
+  );
+  const sheet = document.getElementById('report-sheet');
+  const close = () => sheet.remove();
+  sheet.onclick = (event) => {
+    if (event.target === sheet) close();
+  };
+  sheet.querySelector('#rp-close').onclick = close;
+  sheet.querySelector('#rp-send').onclick = async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      const reason = sheet.querySelector('input[name="rp-reason"]:checked')?.value;
+      const result = await api('/api/reports', {
+        method: 'POST',
+        body: { kind, targetId, reason, note: sheet.querySelector('#rp-note').value },
+      });
+      close();
+      toast(result.alreadyReported ? 'You have already reported this — thank you.' : 'Reported. A moderator will look at it.', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+      event.currentTarget.disabled = false;
+    }
+  };
+}
+
+/** A banner for anyone currently suspended, so the blocks are not a mystery. */
+function suspensionBanner() {
+  const suspension = S.suspension;
+  if (!suspension) return '';
+  return `<div class="notice warn" style="margin-bottom:18px">
+      <b>Your account is suspended until ${esc(new Date(suspension.until).toLocaleDateString('en-US'))}.</b>
+      ${suspension.note ? ` ${esc(suspension.note)}` : ''}
+      You can still read and withdraw, but not trade, post or open markets.
+    </div>`;
+}
+
+/* ------------------------------------------------------------------ *
+ * The queue
+ * ------------------------------------------------------------------ */
+
+async function viewModeration() {
+  if (!S.user?.isAdmin) {
+    setApp('<div class="empty">Admins only.</div>');
+    return;
+  }
+  setApp('<div class="loading">Loading the queue…</div>');
+  const status = S.modFilter ?? 'open';
+  const { reports, counts } = await api(`/api/admin/reports?status=${encodeURIComponent(status)}`);
+  const actions = S.config?.moderationActions ?? {};
+
+  setApp(`
+    <div class="page-head"><div>
+      <h1>Moderation</h1>
+      <div class="muted">Anyone can open a market on anything. This is where that gets checked.</div>
+    </div></div>
+
+    <div class="filters">
+      <div class="chips">
+        ${[
+          ['open', `Open (${counts.open})`],
+          ['actioned', 'Actioned'],
+          ['dismissed', 'Dismissed'],
+          ['all', 'All'],
+        ]
+          .map(([key, label]) => `<button class="chip ${status === key ? 'active' : ''}" data-mod-filter="${key}">${esc(label)}</button>`)
+          .join('')}
+      </div>
+    </div>
+
+    ${
+      reports.length
+        ? reports
+            .map(
+              (r) => `<div class="card report-card ${r.status}">
+          <div class="report-head">
+            <span class="tag ${r.status === 'open' ? 'closed' : 'resolved'}">${esc(r.reasonLabel)}</span>
+            ${r.reportCount > 1 ? `<span class="tag">${r.reportCount}× reported</span>` : ''}
+            <span class="faint">${esc(r.kind)} · by ${esc(r.reporter)} · ${timeAgo(r.createdAt)}</span>
+            <span class="spacer"></span>
+            ${r.status !== 'open' ? `<span class="faint">${esc(actions[r.action] ?? r.action)}</span>` : ''}
+          </div>
+
+          ${
+            r.target
+              ? `<div class="report-target">
+                  <div class="report-text">${esc(r.target.text)}</div>
+                  <div class="faint" style="font-size:12.5px;margin-top:6px">
+                    by <a href="#/user/${esc(r.target.author)}">${esc(r.target.author)}</a>
+                    ${r.target.slug ? ` · <a href="#/market/${esc(r.target.slug)}">open market</a>` : ''}
+                    ${r.target.removed ? ' · <b class="neg">already removed</b>' : ''}
+                  </div>
+                </div>`
+              : '<div class="muted">The target has been deleted.</div>'
+          }
+          ${r.note ? `<div class="muted" style="font-size:13.5px;margin-top:8px">“${esc(r.note)}”</div>` : ''}
+
+          ${
+            r.status === 'open'
+              ? `<div class="report-actions">
+                  <button class="btn sm ghost" data-act="dismiss" data-report="${r.id}">Leave it up</button>
+                  ${
+                    r.kind === 'market'
+                      ? `<button class="btn sm danger" data-act="hide_market" data-report="${r.id}">Hide market</button>`
+                      : `<button class="btn sm danger" data-act="delete_comment" data-report="${r.id}">Remove comment</button>`
+                  }
+                  <button class="btn sm danger" data-act="suspend_user" data-report="${r.id}">Suspend author 7d</button>
+                </div>`
+              : ''
+          }
+        </div>`,
+            )
+            .join('')
+        : '<div class="empty">Nothing in the queue. </div>'
+    }
+  `);
+
+  const el = app();
+  el.querySelectorAll('[data-mod-filter]').forEach((b) => {
+    b.onclick = () => {
+      S.modFilter = b.dataset.modFilter;
+      viewModeration();
+    };
+  });
+  el.querySelectorAll('[data-act]').forEach((button) => {
+    button.onclick = async () => {
+      const action = button.dataset.act;
+      if (action !== 'dismiss' && !confirm(`${actions[action] ?? action}. Continue?`)) return;
+      button.disabled = true;
+      try {
+        const result = await api(`/api/admin/reports/${button.dataset.report}`, {
+          method: 'POST',
+          body: { action, days: 7 },
+        });
+        toast(
+          result.alsoResolved > 1
+            ? `Done — ${result.alsoResolved} reports about the same thing closed.`
+            : 'Done.',
+          'success',
+        );
+        viewModeration();
+      } catch (err) {
+        toast(err.message, 'error');
+        button.disabled = false;
+      }
+    };
+  });
 }
 
 

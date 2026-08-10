@@ -115,7 +115,7 @@ Three independent polling loops (12s / 20s / 30s) were replaced with a **single 
 Ordered by what should block a launch.
 
 **Blocking a public launch**
-1. **No moderation.** Any user can create a market with arbitrary text; comments are unfiltered. Needs a report button, an admin kill switch, and a content rule. Roughly a day.
+1. ~~No moderation.~~ **Shipped** — see the moderation section below.
 2. **Not deployed.** Config is ready (`Dockerfile`, `fly.toml`, `render.yaml`); nothing is running.
 
 **Blocking real money** *(all non-code)*
@@ -133,6 +133,27 @@ Ordered by what should block a launch.
 **Nice to have**
 11. Event grouping (several markets under one event) — Polymarket's main remaining structural advantage.
 12. Market search is `LIKE`; SQLite FTS5 would be better past a few thousand markets.
+
+---
+
+## F. Moderation
+
+Shipped after the audit, since it was the one thing blocking public signups.
+
+**Two rules shape it.** Nothing is deleted outright — a market holds other people's money, so a bad one is *hidden and frozen*, and an admin still has to settle or cancel it so positions resolve. And every action is recorded against the report that prompted it, with who acted and when, so moderation is auditable rather than a series of silent disappearances.
+
+| Capability | Behaviour |
+|---|---|
+| **Report** | Any signed-in user, on a market or a comment, with 8 reasons. Reporting twice is absorbed, not an error. Rate limited to 20/minute. |
+| **Queue** | Admin-only, at `#/moderation`. Shows the target text, its author, the reporter's note, and how many distinct people flagged it. |
+| **Hide market** | Vanishes from every listing and freezes trading; existing positions still settle. Reversible. |
+| **Remove comment** | Soft delete leaving a tombstone, so threads stay readable. |
+| **Suspend author** | Blocks trading, commenting and market creation for a bounded period. Admins cannot be suspended through this route. |
+| **Sweep** | One decision closes every open report about the same target. |
+
+Suspended users see a banner explaining the block and its expiry, and can still read and withdraw.
+
+Covered by 10 tests in `test/moderation.test.js`.
 
 ---
 
