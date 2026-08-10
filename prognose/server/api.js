@@ -107,6 +107,8 @@ route('GET', /^\/api\/me$/, (ctx) => ({ user: ctx.user }));
 /* ------------------------------ markets ----------------------------- */
 
 route('GET', /^\/api\/markets$/, (ctx) => ({
+  /** Positions keyed by market, so a card can show what you already hold. */
+  holdings: ctx.user ? logic.holdingsByMarket(ctx.db, ctx.user.id) : {},
   markets: logic.listMarkets(ctx.db, {
     search: ctx.query.get('search') ?? '',
     category: ctx.query.get('category') ?? '',
@@ -129,6 +131,7 @@ route('GET', /^\/api\/markets\/([\w-]+)$/, (ctx, slug) => {
     history: logic.marketHistory(ctx.db, row.id),
     trades: logic.marketTrades(ctx.db, row.id),
     comments: logic.listComments(ctx.db, row.id),
+    holders: logic.marketHolders(ctx.db, row.id),
     positions: logic.userPositionsFor(ctx.db, ctx.user?.id, row.id),
   };
 });

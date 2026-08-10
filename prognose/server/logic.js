@@ -183,6 +183,31 @@ export function marketHistory(db, marketId) {
   return { labels, points };
 }
 
+/**
+ * Biggest positions in a market. Social proof: seeing who is on each side,
+ * and how heavily, is what makes a market feel worth having an opinion about.
+ */
+export function marketHolders(db, marketId, limit = 6) {
+  const row = marketRowById(db, marketId);
+  const labels = JSON.parse(row.outcomes);
+  const prices = lmsr.prices(JSON.parse(row.q), row.b);
+  return db
+    .prepare(
+      `SELECT p.outcome, p.shares, p.cost_basis, u.id, u.username, u.avatar
+       FROM positions p JOIN users u ON u.id = p.user_id
+       WHERE p.market_id = ? ORDER BY p.shares DESC LIMIT ?`,
+    )
+    .all(marketId, limit)
+    .map((h) => ({
+      user: { id: h.id, username: h.username, avatar: h.avatar },
+      outcome: h.outcome,
+      outcomeLabel: labels[h.outcome],
+      shares: h.shares,
+      value: money(h.shares * prices[h.outcome]),
+      unrealized: money(h.shares * prices[h.outcome] - h.cost_basis),
+    }));
+}
+
 export function marketTrades(db, marketId, limit = 30) {
   return db
     .prepare(
@@ -651,6 +676,15 @@ export function resolveMarket(db, user, marketId, outcome) {
       totalPayout: money(totalPayout),
       creatorReturn,
       paidUsers: [...perUser.keys()],
+      topWinner: (() => {
+        let best = null;
+        for (const [userId, tally] of perUser) {
+          if (tally.realized > 0 && (!best || tally.realized > best.realized)) best = { userId, ...tally };
+        }
+        if (!best) return null;
+        const who = db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(best.userId);
+        return { username: who.username, avatar: who.avatar, won: money(best.realized) };
+      })(),
     };
   });
 
@@ -660,6 +694,8 @@ export function resolveMarket(db, user, marketId, outcome) {
     status: result.market.status,
     resolvedOutcome: result.market.resolvedOutcome,
     question: result.market.question,
+    emoji: result.market.emoji,
+    topWinner: result.topWinner,
   });
   return result;
 }
@@ -837,6 +873,25 @@ export function leaderboard(db, limit = 50) {
     .sort((a, b) => b.netWorth - a.netWorth)
     .slice(0, limit)
     .map((u, i) => ({ ...u, rank: i + 1 }));
+}
+
+/** Every open position the user holds, grouped by market id. */
+export function holdingsByMarket(db, userId) {
+  const out = {};
+  for (const row of db
+    .prepare(
+      `SELECT p.market_id, p.outcome, p.shares, p.cost_basis, m.outcomes
+       FROM positions p JOIN markets m ON m.id = p.market_id WHERE p.user_id = ?`,
+    )
+    .all(userId)) {
+    (out[row.market_id] ??= []).push({
+      outcome: row.outcome,
+      outcomeLabel: JSON.parse(row.outcomes)[row.outcome],
+      shares: row.shares,
+      costBasis: money(row.cost_basis),
+    });
+  }
+  return out;
 }
 
 export function userPositionsFor(db, userId, marketId) {

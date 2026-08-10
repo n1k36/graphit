@@ -1644,3 +1644,237 @@ table.data th.num {
 body.is-offline .ticker { background: rgba(92, 104, 128, 0.12); }
 body.is-offline .market-card .chance-value,
 body.is-offline .headline-price .big { opacity: 0.65; }
+
+/* ================================================================== *
+ * One-tap betting on the card
+ * ================================================================== */
+
+.quick-bet {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.quick-bet:has(> :only-child) {
+  grid-template-columns: 1fr;
+}
+.qb {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 650;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.qb b {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.qb.yes:hover {
+  background: var(--yes-soft);
+  border-color: var(--yes);
+  color: var(--yes);
+}
+.qb.no:hover {
+  background: var(--no-soft);
+  border-color: var(--no);
+  color: var(--no);
+}
+.qb.neutral:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: #8fbaff;
+}
+.qb:active {
+  transform: scale(0.98);
+}
+
+.held-badge {
+  font-size: 12.5px;
+  color: var(--muted);
+  background: var(--accent-soft);
+  border: 1px solid rgba(45, 127, 255, 0.25);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.held-badge b {
+  color: var(--text);
+}
+
+.hot-flag.featured {
+  background: linear-gradient(100deg, #7ea2ff, var(--accent));
+  color: #04122e;
+}
+
+.side-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--chip);
+  background: color-mix(in srgb, var(--chip) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip) 35%, transparent);
+}
+
+/* ================================================================== *
+ * Quick-bet sheet
+ * ================================================================== */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: rgba(4, 6, 11, 0.62);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fade-in 0.14s ease-out;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+.sheet {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+  animation: sheet-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes sheet-in {
+  from { transform: translateY(14px) scale(0.98); opacity: 0; }
+}
+.sheet-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: none;
+  border: 0;
+  color: var(--faint);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+.sheet-close:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.sheet-market {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-weight: 600;
+  font-size: 14.5px;
+  line-height: 1.35;
+  padding-right: 26px;
+  margin-bottom: 16px;
+}
+.market-emoji.sm {
+  width: 32px;
+  height: 32px;
+  font-size: 17px;
+  border-radius: 9px;
+}
+.qb-outcomes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.qb-amount {
+  position: relative;
+  margin-bottom: 8px;
+}
+.qb-amount .prefix {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-weight: 650;
+  font-size: 20px;
+}
+.qb-amount input {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 14px 14px 32px;
+  font-size: 24px;
+  font-weight: 700;
+  outline: none;
+  font-variant-numeric: tabular-nums;
+}
+.qb-amount input:focus {
+  border-color: var(--accent);
+}
+.quick button.on {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.qb-payout {
+  text-align: center;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  margin-bottom: 14px;
+}
+.qb-payout.yes {
+  background: var(--yes-soft);
+  border-color: rgba(20, 196, 106, 0.28);
+}
+.qb-payout.no {
+  background: var(--no-soft);
+  border-color: rgba(244, 63, 94, 0.28);
+}
+.qb-payout-main {
+  font-size: 30px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.qb-payout-sub {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.qb-foot {
+  text-align: center;
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+.tick.win b {
+  color: var(--warn);
+}
+
+@media (max-width: 560px) {
+  .sheet-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .sheet {
+    max-width: none;
+    border-radius: 20px 20px 0 0;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  }
+  @keyframes sheet-in {
+    from { transform: translateY(100%); opacity: 1; }
+  }
+}

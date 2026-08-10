@@ -122,6 +122,7 @@ const S = {
   trade: { outcome: 0, side: 'buy', amount: '' },
   chartRange: 'all',
   notifications: { unread: 0, items: [] },
+  holdings: {},
   stats: null,
   activity: [],
   page: null,
@@ -433,8 +434,31 @@ function marketCard(market) {
         market.outcomes.length > 3 ? `<div class="outcome-row faint">+${market.outcomes.length - 3} more</div>` : ''
       }</div>`;
 
+  const held = S.holdings?.[market.id] ?? [];
+  const heldValue = held.reduce((sum, h) => sum + h.shares * (market.outcomes[h.outcome]?.price ?? 0), 0);
+
+  // Two-outcome markets get their buttons inline; anything wider would not fit
+  // a card, so those open the sheet on the leading outcome instead.
+  const quickBet =
+    market.tradable && market.isBinary
+      ? `<div class="quick-bet">
+          ${market.outcomes
+            .map(
+              (o) => `<button class="qb ${o.index === 0 ? 'yes' : 'no'}" data-bet="${o.index}">
+                <span>${esc(o.label)}</span><b>${cents(o.price)}</b>
+              </button>`,
+            )
+            .join('')}
+        </div>`
+      : market.tradable
+        ? `<div class="quick-bet"><button class="qb neutral" data-bet="${lead.outcome.index}">Bet on ${esc(
+            lead.outcome.label.slice(0, 18),
+          )}</button></div>`
+        : '';
+
   return `<article class="market-card ${market.hot ? 'hot' : ''}" data-slug="${esc(market.slug)}">
       ${market.hot ? '<span class="hot-flag">🔥 HOT</span>' : ''}
+      ${market.featured && !market.hot ? '<span class="hot-flag featured">★ FEATURED</span>' : ''}
       <div class="head">
         <div class="market-emoji">${esc(market.emoji || '📈')}</div>
         <div class="question">${esc(market.question)}</div>
@@ -444,6 +468,14 @@ function marketCard(market) {
         </div>
       </div>
       ${market.isBinary ? sparkline(market) : rows}
+      ${quickBet}
+      ${
+        held.length
+          ? `<div class="held-badge">You hold ${held
+              .map((h) => `<b>${num(h.shares, 0)} ${esc(h.outcomeLabel)}</b>`)
+              .join(' · ')} — worth ${usd(heldValue)}</div>`
+          : ''
+      }
       <div class="card-foot">
         <span class="tag">${esc(market.category)}</span>
         <span>${usd(market.volume, 0)} vol</span>
@@ -462,10 +494,12 @@ async function viewMarkets() {
     status: S.filters.status,
     sort: S.filters.sort,
   });
-  const [{ markets }, stats] = await Promise.all([
+  const [listing, stats] = await Promise.all([
     api(`/api/markets?${params}`),
     S.stats ? Promise.resolve(S.stats) : api('/api/stats').catch(() => null),
   ]);
+  const { markets } = listing;
+  S.holdings = listing.holdings ?? {};
   S.stats = stats;
   const categories = ['All', ...(S.config?.categories ?? [])];
 
@@ -515,7 +549,17 @@ async function viewMarkets() {
   `);
 
   app().querySelectorAll('.market-card').forEach((card) => {
-    card.onclick = () => navigate(`#/market/${card.dataset.slug}`);
+    card.onclick = (event) => {
+      // A bet button is a decision, not navigation.
+      const bet = event.target.closest('[data-bet]');
+      if (bet) {
+        event.stopPropagation();
+        const market = markets.find((m) => m.slug === card.dataset.slug);
+        if (market) openQuickBet(market, Number(bet.dataset.bet));
+        return;
+      }
+      navigate(`#/market/${card.dataset.slug}`);
+    };
   });
   app().querySelectorAll('[data-filter="category"]').forEach((chip) => {
     chip.onclick = () => {
@@ -546,7 +590,7 @@ async function viewMarket(slug) {
 }
 
 function renderMarket() {
-  const { market, history, trades, comments, positions } = current;
+  const { market, history, trades, comments, positions, holders } = current;
   const lead = leadOutcome(market);
   const shown = displayPrices(market);
   const canSettle = S.user && (S.user.id === market.creator?.id || S.user.isAdmin) && market.status === 'open';
@@ -626,6 +670,8 @@ function renderMarket() {
         }
 
         ${canSettle ? settlePanel(market) : ''}
+
+        ${holdersPanel(holders, market)}
 
         <div class="section card">
           <h3>Recent activity</h3>
@@ -1569,6 +1615,13 @@ function countdown(iso) {
 }
 
 function tickerItem(item) {
+  if (item.kind === 'win') {
+    return `<a class="tick win" href="#/market/${esc(item.slug)}">
+        <span class="tick-emoji">🏆</span>
+        <b>${esc(item.topWinner.username)}</b><span class="pos">won ${usd(item.topWinner.won)}</span>
+        <span class="faint">${esc(item.question.slice(0, 46))}</span>
+      </a>`;
+  }
   return `<a class="tick" href="#/market/${esc(item.market.slug)}">
       <span class="tick-emoji">${esc(item.market.emoji || '📈')}</span>
       <b>${esc(item.user.username)}</b>
@@ -2341,7 +2394,11 @@ function connectStream() {
   source.addEventListener('settled', (event) => {
     try {
       const frame = JSON.parse(event.data);
-      // If you are looking at the market that just settled, refresh it.
+      // A payout is the most persuasive thing on the platform — show it.
+      if (frame.topWinner) {
+        S.activity = [{ kind: 'win', id: `win-${frame.at}`, ...frame }, ...S.activity].slice(0, 22);
+        paintTicker();
+      }
       if (current?.market?.slug === frame.slug) refreshMarket();
       if (S.user) refreshNotifications();
     } catch {
@@ -2528,6 +2585,211 @@ function depthChart(market) {
           })
           .join('')}
       </div>
+    </div>`;
+}
+
+
+
+/* ================================================================== *
+ * Quick bet — take a position without leaving the list
+ *
+ * This is the single biggest difference between browsing and betting. On
+ * Polymarket the Yes/No buttons live on the card itself; the market page is
+ * for research, not for the decision. Everything below implements that: tap
+ * an outcome, pick a size, confirm, stay where you were.
+ * ================================================================== */
+
+const QUICK = { market: null, outcome: 0, amount: 10, busy: false };
+
+/** Amounts people actually pick, biggest last so the eye lands on it. */
+const QUICK_AMOUNTS = [5, 10, 25, 50, 100];
+
+function openQuickBet(market, outcome) {
+  if (!S.user) {
+    toast('Create an account to place a bet — it takes a second.', '');
+    return navigate('#/signup');
+  }
+  if (!market.tradable) return toast('This market is closed.', 'error');
+  QUICK.market = market;
+  QUICK.outcome = outcome;
+  QUICK.amount = Math.min(10, Math.max(1, Math.floor(S.user.balance)));
+  QUICK.busy = false;
+  renderQuickBet();
+}
+
+function closeQuickBet() {
+  document.getElementById('quick-bet')?.remove();
+  document.removeEventListener('keydown', quickBetKeys);
+  QUICK.market = null;
+}
+
+function quickBetKeys(event) {
+  if (event.key === 'Escape') closeQuickBet();
+  if (event.key === 'Enter' && !QUICK.busy) confirmQuickBet();
+}
+
+/** Local preview: shares, average price and the payout if it comes in. */
+function quickBetPreview() {
+  const market = QUICK.market;
+  const amount = Number(QUICK.amount);
+  if (!market?.q || !(amount > 0)) return null;
+  const shares = sharesForBudget(market.q, market.b, QUICK.outcome, amount / (1 + market.feeRate));
+  if (!(shares > 0)) return null;
+  return { shares, avgPrice: amount / shares, payout: shares, profit: shares - amount };
+}
+
+function renderQuickBet() {
+  const market = QUICK.market;
+  if (!market) return;
+  const outcome = market.outcomes[QUICK.outcome];
+  const preview = quickBetPreview();
+  const affordable = S.user && Number(QUICK.amount) <= S.user.balance + 1e-9;
+  const kind = market.isBinary ? (QUICK.outcome === 0 ? 'yes' : 'no') : '';
+
+  document.getElementById('quick-bet')?.remove();
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    `<div class="sheet-backdrop" id="quick-bet" role="dialog" aria-modal="true" aria-label="Place a bet">
+      <div class="sheet">
+        <button class="sheet-close" id="qb-close" aria-label="Close">×</button>
+        <div class="sheet-market">
+          <span class="market-emoji sm">${esc(market.emoji || '📈')}</span>
+          <span>${esc(market.question)}</span>
+        </div>
+
+        <div class="qb-outcomes">
+          ${market.outcomes
+            .map(
+              (o) => `<button class="outcome-btn ${market.isBinary ? (o.index === 0 ? 'yes' : 'no') : ''} ${
+                o.index === QUICK.outcome ? 'active' : ''
+              }" data-qb-outcome="${o.index}">
+                <span>${esc(o.label)}</span><span class="price">${cents(o.price)}</span>
+              </button>`,
+            )
+            .join('')}
+        </div>
+
+        <div class="qb-amount">
+          <span class="prefix">$</span>
+          <input id="qb-input" type="text" inputmode="decimal" value="${esc(String(QUICK.amount))}" aria-label="Amount" />
+        </div>
+        <div class="quick">
+          ${QUICK_AMOUNTS.map((v) => `<button data-qb-amount="${v}" class="${Number(QUICK.amount) === v ? 'on' : ''}">$${v}</button>`).join('')}
+          <button data-qb-amount="max">Max</button>
+        </div>
+
+        <div class="qb-payout ${kind}">
+          ${
+            preview
+              ? `<div class="qb-payout-main">${usd(preview.payout)}</div>
+                 <div class="qb-payout-sub">to win if <b>${esc(outcome.label)}</b> — ${num(preview.shares)} shares at ${cents(preview.avgPrice)}</div>`
+              : `<div class="qb-payout-sub">Enter an amount</div>`
+          }
+        </div>
+
+        <button class="btn ${kind}" id="qb-confirm" ${!preview || !affordable || QUICK.busy ? 'disabled' : ''}>
+          ${
+            QUICK.busy
+              ? 'Placing…'
+              : !affordable
+                ? `Balance is ${usd(S.user?.balance ?? 0)}`
+                : `Bet ${usd(Number(QUICK.amount))} on ${esc(outcome.label)}`
+          }
+        </button>
+        <div class="qb-foot faint">Balance ${usd(S.user?.balance ?? 0)} · fee ${pct(market.feeRate, 1)} · you can sell any time before it closes</div>
+      </div>
+    </div>`,
+  );
+
+  const sheet = document.getElementById('quick-bet');
+  sheet.onclick = (event) => {
+    if (event.target === sheet) closeQuickBet();
+  };
+  sheet.querySelector('#qb-close').onclick = closeQuickBet;
+  sheet.querySelectorAll('[data-qb-outcome]').forEach((b) => {
+    b.onclick = () => {
+      QUICK.outcome = Number(b.dataset.qbOutcome);
+      renderQuickBet();
+    };
+  });
+  sheet.querySelectorAll('[data-qb-amount]').forEach((b) => {
+    b.onclick = () => {
+      QUICK.amount =
+        b.dataset.qbAmount === 'max'
+          ? Math.floor((S.user?.balance ?? 0) * 100) / 100
+          : Number(b.dataset.qbAmount);
+      renderQuickBet();
+    };
+  });
+  const input = sheet.querySelector('#qb-input');
+  input.oninput = () => {
+    QUICK.amount = input.value.replace(/[^0-9.]/g, '');
+    const preview = quickBetPreview();
+    const payout = sheet.querySelector('.qb-payout-main');
+    if (payout && preview) payout.textContent = usd(preview.payout);
+    const confirm = sheet.querySelector('#qb-confirm');
+    confirm.disabled = !preview || Number(QUICK.amount) > (S.user?.balance ?? 0);
+  };
+  sheet.querySelector('#qb-confirm').onclick = confirmQuickBet;
+  document.addEventListener('keydown', quickBetKeys);
+}
+
+async function confirmQuickBet() {
+  const preview = quickBetPreview();
+  if (!preview || QUICK.busy) return;
+  QUICK.busy = true;
+  renderQuickBet();
+  const market = QUICK.market;
+  try {
+    const res = await api(`/api/markets/${market.slug}/trade`, {
+      method: 'POST',
+      body: {
+        outcome: QUICK.outcome,
+        side: 'buy',
+        budget: Number(QUICK.amount),
+        expectedCost: Number(QUICK.amount),
+        slippage: 0.05,
+      },
+    });
+    S.user = res.user;
+    closeQuickBet();
+    renderNav();
+    toast(`${num(res.fill.shares)} ${res.fill.outcomeLabel} at ${cents(res.fill.avgPrice)} — ${usd(res.fill.shares)} to win.`, 'success');
+    for (const badge of res.unlocked ?? []) {
+      celebrate();
+      toast(`${badge.icon} Achievement unlocked: ${badge.title}`, 'success');
+    }
+    // Reflect it wherever the user happens to be standing.
+    if (currentRoute().head === '') viewMarkets();
+    else if (current?.market?.slug === market.slug) refreshMarket();
+  } catch (err) {
+    QUICK.busy = false;
+    renderQuickBet();
+    toast(err.message, 'error');
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Who is on each side
+ * ------------------------------------------------------------------ */
+
+function holdersPanel(holders, market) {
+  if (!holders?.length) return '';
+  return `<div class="section card">
+      <h3>Biggest positions</h3>
+      <table class="data">
+        <tbody>${holders
+          .map(
+            (h) => `<tr>
+              <td><div class="user-cell">${avatar(h.user, true)}<a href="#/user/${esc(h.user.username)}">${esc(h.user.username)}</a></div></td>
+              <td><span class="side-chip" style="--chip:${colorFor(market, h.outcome)}">${esc(h.outcomeLabel)}</span></td>
+              <td class="num mono">${num(h.shares)} sh</td>
+              <td class="num mono">${usd(h.value)}</td>
+              <td class="num mono ${cls(h.unrealized)}">${signed(h.unrealized)}</td>
+            </tr>`,
+          )
+          .join('')}</tbody>
+      </table>
     </div>`;
 }
 
