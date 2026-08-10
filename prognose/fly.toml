@@ -1,0 +1,35 @@
+# fly deploy  —  https://fly.io/docs/reference/configuration/
+app = "tell"
+primary_region = "fra"          # Frankfurt: closest to a DE/CH audience
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "4173"
+  PROGNOSE_DB = "/app/data/prognose.db"
+
+# SQLite must live on a real volume, or every deploy wipes the ledger.
+[[mounts]]
+  source = "tell_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 4173
+  force_https = true
+  auto_stop_machines = false     # a stopped machine drops live SSE clients
+  auto_start_machines = true
+  # SQLite is single-writer: one machine, scaled up rather than out.
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"

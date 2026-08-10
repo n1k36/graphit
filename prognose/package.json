@@ -8,7 +8,10 @@
     "start": "node --no-warnings server/server.js",
     "dev": "node --no-warnings --watch server/server.js",
     "seed": "node --no-warnings server/seed.js",
-    "test": "node --no-warnings --test \"test/*.test.js\""
+    "test": "node --no-warnings --test \"test/*.test.js\"",
+    "check": "node tools/check.mjs",
+    "icons": "node tools/make-icons.mjs",
+    "verify": "npm run check && npm test"
   },
   "engines": {
     "node": ">=22.5.0"

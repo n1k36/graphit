@@ -9,16 +9,45 @@ export const ROOT = path.resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const BRAND = {
   name: process.env.BRAND_NAME || 'Tell',
   tagline: process.env.BRAND_TAGLINE || 'Was passiert als Nächstes?',
-  currency: process.env.BRAND_CURRENCY || 'USD',
-  symbol: '$',
 };
 
 /** Fixed constants. Anything an operator would want to tune lives in settings. */
 export const CONFIG = {
   /** Play-money mode keeps deposits sandboxed and hands out a welcome balance. */
   demoMode: process.env.DEMO_MODE !== 'off',
-  sessionDays: 30,
+  /** Sessions older than this are rejected and swept. */
+  sessionDays: Number(process.env.SESSION_DAYS) || 30,
 };
+
+/**
+ * Fail fast on a misconfigured deployment rather than 500-ing on the first
+ * customer payment. Returns the problems found so the caller can decide
+ * whether to warn or refuse to boot.
+ */
+export function validateEnvironment(env = process.env) {
+  const provider = env.PAYMENTS_PROVIDER || 'mock';
+  const problems = [];
+  const warnings = [];
+
+  if (provider === 'stripe') {
+    if (!env.STRIPE_SECRET_KEY) problems.push('PAYMENTS_PROVIDER=stripe but STRIPE_SECRET_KEY is not set.');
+    if (!env.STRIPE_WEBHOOK_SECRET) problems.push('PAYMENTS_PROVIDER=stripe but STRIPE_WEBHOOK_SECRET is not set.');
+    if (!env.PUBLIC_BASE_URL) warnings.push('PUBLIC_BASE_URL is unset; Stripe will send users back to localhost.');
+    if (env.STRIPE_SECRET_KEY?.startsWith('sk_live_') && !env.PUBLIC_BASE_URL?.startsWith('https://')) {
+      problems.push('A live Stripe key requires PUBLIC_BASE_URL to be https.');
+    }
+  }
+  if (provider === 'wise') {
+    if (!env.WISE_API_TOKEN || !env.WISE_PROFILE_ID) problems.push('PAYMENTS_PROVIDER=wise needs WISE_API_TOKEN and WISE_PROFILE_ID.');
+    if (!env.WISE_ACCOUNT_IBAN) problems.push('Wise deposits need WISE_ACCOUNT_IBAN so payers know where to send money.');
+    if (!env.WISE_PUBLIC_KEY) warnings.push('WISE_PUBLIC_KEY is unset; incoming webhooks will all be rejected.');
+    if (env.WISE_ENV === 'live' && !env.WISE_PRIVATE_KEY) warnings.push('WISE_PRIVATE_KEY is unset; live payouts will fail at the SCA step.');
+  }
+  if (provider !== 'mock' && !env.PAYMENTS_WEBHOOK_SECRET) {
+    warnings.push('PAYMENTS_WEBHOOK_SECRET is still the development default.');
+  }
+  return { provider, problems, warnings };
+}
 
 /**
  * Operator-tunable settings, editable at runtime from the admin panel.
@@ -227,6 +256,10 @@ CREATE INDEX IF NOT EXISTS idx_trades_market  ON trades(market_id, id);
 CREATE INDEX IF NOT EXISTS idx_trades_user    ON trades(user_id, id);
 CREATE INDEX IF NOT EXISTS idx_trades_time    ON trades(created_at);
 CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id);
+CREATE INDEX IF NOT EXISTS idx_positions_market ON positions(market_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
+CREATE INDEX IF NOT EXISTS idx_markets_creator ON markets(creator_id);
+CREATE INDEX IF NOT EXISTS idx_intents_user ON payment_intents(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_comments_market ON comments(market_id, id);
 CREATE INDEX IF NOT EXISTS idx_markets_status ON markets(status, closes_at);
 CREATE INDEX IF NOT EXISTS idx_ledger_user    ON ledger(user_id, id);
@@ -239,7 +272,12 @@ export function defaultDbPath() {
   return process.env.PROGNOSE_DB || path.join(ROOT, 'data', 'prognose.db');
 }
 
-/** Add a column to an existing table if it is not there yet. */
+/**
+ * Add a column to an existing table if it is not there yet.
+ *
+ * check-allow-sql: PRAGMA accepts no bound parameters, and both `table` and
+ * `column` are hardcoded literals from the migration list below — never input.
+ */
 function ensureColumn(db, table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (!columns.some((c) => c.name === column)) {
@@ -252,6 +290,10 @@ export function openDb(file = defaultDbPath()) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
+  // Without this a second concurrent writer fails immediately with SQLITE_BUSY
+  // instead of waiting for the lock. WAL lets readers through regardless.
+  db.exec('PRAGMA busy_timeout = 5000');
+  db.exec('PRAGMA synchronous = NORMAL');
   db.exec(SCHEMA);
   // Databases created before the wallet existed pick the new columns up here.
   ensureColumn(db, 'users', 'bonus_balance', 'REAL NOT NULL DEFAULT 0');

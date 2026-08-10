@@ -6,6 +6,9 @@ COPY package.json ./
 COPY server ./server
 COPY public ./public
 
+# Node needs to know it is in production for its own defaults.
+ENV NODE_ENV=production
+
 # The SQLite file lives here; mount a volume so it survives a redeploy.
 RUN mkdir -p /app/data
 ENV PROGNOSE_DB=/app/data/prognose.db
@@ -18,6 +21,6 @@ RUN chown -R node:node /app
 USER node
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-  CMD wget -qO- http://127.0.0.1:4173/api/stats > /dev/null || exit 1
+  CMD wget -qO- http://127.0.0.1:4173/healthz > /dev/null || exit 1
 
 CMD ["node", "--no-warnings", "server/server.js"]

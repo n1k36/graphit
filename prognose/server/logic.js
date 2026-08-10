@@ -3,6 +3,7 @@ import { HttpError, badRequest, forbidden, notFound } from './errors.js';
 import * as lmsr from './lmsr.js';
 import { getUser } from './auth.js';
 import { creditUser, debitUser, platformEntry } from './ledger.js';
+import { publish } from './events.js';
 import {
   addXp,
   assertNotExcluded,
@@ -25,12 +26,15 @@ const DUST = 1e-6;
  * Reading markets
  * ------------------------------------------------------------------ */
 
-export function serializeMarket(db, row, { includeTraders = false } = {}) {
+export function serializeMarket(db, row, { includeTraders = false, creators = null } = {}) {
   const q = JSON.parse(row.q);
   const labels = JSON.parse(row.outcomes);
   const priceVector = lmsr.prices(q, row.b);
   const closed = row.status === 'open' && new Date(row.closes_at).getTime() <= Date.now();
-  const creator = db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(row.creator_id);
+  // `creators` lets a list view preload every author in one query instead of
+  // one lookup per row.
+  const creator =
+    creators?.get(row.creator_id) ?? db.prepare('SELECT username, avatar FROM users WHERE id = ?').get(row.creator_id);
 
   const market = {
     id: row.id,
@@ -55,6 +59,7 @@ export function serializeMarket(db, row, { includeTraders = false } = {}) {
     tradable: row.status === 'open' && !closed,
     resolvedOutcome: row.resolved_outcome,
     resolvedAt: row.resolved_at,
+    featured: !!row.featured,
     isBinary: labels.length === 2 && labels[0].toLowerCase() === 'yes',
   };
 
@@ -98,25 +103,52 @@ export function listMarkets(db, opts = {}) {
       activity: 'trade_count DESC, id DESC',
     }[sort] || 'volume DESC, id DESC';
 
-  const sql = `SELECT * FROM markets ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ${order} LIMIT ?`;
+  // Featured markets are pinned above whatever sort is active.
+  const sql = `SELECT * FROM markets ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY featured DESC, ${order} LIMIT ?`;
   const rows = db.prepare(sql).all(...params, Math.min(Number(limit) || 200, 500));
-  const sparkStmt = db.prepare(
-    "SELECT prices FROM trades WHERE market_id = ? AND side IN ('buy','sell') ORDER BY id DESC LIMIT 40",
+
+  // Preload everything the rows need, so serialising N markets stays O(1) in
+  // queries rather than O(N).
+  const ids = rows.map((r) => r.id);
+  const creators = new Map(
+    ids.length
+      ? db
+          .prepare(
+            `SELECT id, username, avatar FROM users WHERE id IN (SELECT DISTINCT creator_id FROM markets WHERE id IN (${ids.map(() => '?').join(',')}))`,
+          )
+          .all(...ids)
+          .map((u) => [u.id, u])
+      : [],
   );
+  const sparks = new Map();
+  if (ids.length) {
+    // One pass over recent trades, bucketed per market, newest last.
+    for (const t of db
+      .prepare(
+        `SELECT market_id, prices FROM trades
+         WHERE market_id IN (${ids.map(() => '?').join(',')}) AND side IN ('buy','sell')
+         ORDER BY id`,
+      )
+      .all(...ids)) {
+      const bucket = sparks.get(t.market_id) ?? [];
+      bucket.push(JSON.parse(t.prices)[0]);
+      if (bucket.length > 40) bucket.shift();
+      sparks.set(t.market_id, bucket);
+    }
+  }
   const trending = trendingVolume(db);
   const hotThreshold = Math.max(50, [...trending.values()].map((t) => t.volume).sort((a, b) => b - a)[2] ?? 0);
   const list = rows.map((row) => {
-    const market = serializeMarket(db, row);
+    const market = serializeMarket(db, row, { creators });
     const n = market.outcomes.length;
-    const recent = sparkStmt.all(row.id).reverse();
-    market.spark = [1 / n, ...recent.map((t) => JSON.parse(t.prices)[0])];
+    market.spark = [1 / n, ...(sparks.get(row.id) ?? [])];
     const hot = trending.get(row.id);
     market.volume24h = money(hot?.volume ?? 0);
     market.trades24h = hot?.trades ?? 0;
     market.hot = market.status === 'open' && !market.closed && (hot?.volume ?? 0) >= hotThreshold && hotThreshold > 0;
     return market;
   });
-  if (opts.sort === 'hot') list.sort((a, b) => b.volume24h - a.volume24h);
+  if (opts.sort === 'hot') list.sort((a, b) => Number(b.featured) - Number(a.featured) || b.volume24h - a.volume24h);
   return list;
 }
 
@@ -341,7 +373,7 @@ export function quoteTrade(db, marketId, input, userId = null) {
 }
 
 export function executeTrade(db, user, marketId, input) {
-  return transaction(db, () => {
+  const result = transaction(db, () => {
     const row = marketRowById(db, marketId);
     if (row.status !== 'open') throw badRequest('This market has already been settled.');
     if (new Date(row.closes_at).getTime() <= Date.now()) throw badRequest('This market is closed for trading.');
@@ -483,6 +515,24 @@ export function executeTrade(db, user, marketId, input) {
       position: { shares: newShares, costBasis: newBasis },
     };
   });
+
+  // Only after the commit, so nobody is told about a trade that rolled back.
+  publish('trade', {
+    slug: result.market.slug,
+    marketId: result.market.id,
+    prices: result.market.outcomes.map((o) => o.price),
+    volume: result.market.volume,
+    fill: {
+      side: result.fill.side,
+      outcomeLabel: result.fill.outcomeLabel,
+      shares: result.fill.shares,
+      cost: result.fill.cost,
+      price: result.fill.avgPrice,
+    },
+    user: { username: user.username, avatar: user.avatar },
+    market: { slug: result.market.slug, question: result.market.question, emoji: result.market.emoji },
+  });
+  return result;
 }
 
 /* ------------------------------------------------------------------ *
@@ -494,7 +544,7 @@ export function executeTrade(db, user, marketId, input) {
  * market and refund every holder at the last traded price.
  */
 export function resolveMarket(db, user, marketId, outcome) {
-  return transaction(db, () => {
+  const result = transaction(db, () => {
     const row = marketRowById(db, marketId);
     if (row.status !== 'open') throw badRequest('This market has already been settled.');
     if (row.creator_id !== user.id && !user.isAdmin) {
@@ -600,8 +650,18 @@ export function resolveMarket(db, user, marketId, outcome) {
       market: serializeMarket(db, marketRowById(db, row.id)),
       totalPayout: money(totalPayout),
       creatorReturn,
+      paidUsers: [...perUser.keys()],
     };
   });
+
+  publish('settled', {
+    slug: result.market.slug,
+    marketId: result.market.id,
+    status: result.market.status,
+    resolvedOutcome: result.market.resolvedOutcome,
+    question: result.market.question,
+  });
+  return result;
 }
 
 /* ------------------------------------------------------------------ *
@@ -697,26 +757,59 @@ export function portfolio(db, userId) {
   };
 }
 
+/**
+ * Leaderboard, in a fixed number of queries regardless of user count.
+ *
+ * The previous version issued ~4 statements per user (creator equity, market
+ * count, trade count), which is fine for five accounts and fatal for ten
+ * thousand. Everything below is aggregated set-wise instead.
+ */
 export function leaderboard(db, limit = 50) {
-  const markets = new Map(
-    db.prepare("SELECT id, q, b FROM markets").all().map((m) => [m.id, lmsr.prices(JSON.parse(m.q), m.b)]),
+  const priceByMarket = new Map(
+    db
+      .prepare('SELECT id, q, b, subsidy, collected, status FROM markets')
+      .all()
+      .map((m) => [m.id, { ...m, prices: lmsr.prices(JSON.parse(m.q), m.b) }]),
   );
+
+  // Mark every position to market in one pass.
+  const positionValue = new Map();
+  for (const p of db.prepare('SELECT user_id, market_id, outcome, shares FROM positions').all()) {
+    const price = priceByMarket.get(p.market_id)?.prices?.[p.outcome] ?? 0;
+    positionValue.set(p.user_id, (positionValue.get(p.user_id) ?? 0) + p.shares * price);
+  }
+
+  // Creator equity: subsidy plus cash taken in, less what the AMM still owes.
+  const equityByUser = new Map();
+  const marketsByUser = new Map();
+  for (const row of db.prepare('SELECT id, creator_id, status FROM markets').all()) {
+    marketsByUser.set(row.creator_id, (marketsByUser.get(row.creator_id) ?? 0) + 1);
+    if (row.status !== 'open') continue;
+    const m = priceByMarket.get(row.id);
+    const q = JSON.parse(m.q);
+    const owed = q.reduce((sum, x, i) => sum + x * m.prices[i], 0);
+    equityByUser.set(row.creator_id, (equityByUser.get(row.creator_id) ?? 0) + m.subsidy + m.collected - owed);
+  }
+
+  const tradesByUser = new Map(
+    db
+      .prepare("SELECT user_id, COUNT(*) AS n FROM trades WHERE side != 'settle' GROUP BY user_id")
+      .all()
+      .map((r) => [r.user_id, r.n]),
+  );
+
   const users = db
     .prepare(
-      `SELECT u.*, p.deposited, p.bonus_granted, p.withdrawn, p.xp, p.streak, p.wins, p.losses
-       FROM users u LEFT JOIN profiles p ON p.user_id = u.id ORDER BY u.id`,
+      `SELECT u.id, u.username, u.avatar, u.balance, u.bonus_balance, u.realized_pnl,
+              p.deposited, p.bonus_granted, p.withdrawn, p.xp, p.streak, p.wins, p.losses
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id`,
     )
     .all();
-  const positions = db.prepare('SELECT * FROM positions').all();
-  const valueByUser = new Map();
-  for (const p of positions) {
-    const price = markets.get(p.market_id)?.[p.outcome] ?? 0;
-    valueByUser.set(p.user_id, (valueByUser.get(p.user_id) ?? 0) + p.shares * price);
-  }
+
   return users
     .map((u) => {
-      const value = valueByUser.get(u.id) ?? 0;
-      const equity = creatorEquity(db, u.id);
+      const value = positionValue.get(u.id) ?? 0;
+      const equity = equityByUser.get(u.id) ?? 0;
       const balance = u.balance + (u.bonus_balance ?? 0);
       const netWorth = money(balance + value + equity);
       const funded = money((u.deposited ?? 0) + (u.bonus_granted ?? 0) - (u.withdrawn ?? 0));
@@ -726,7 +819,7 @@ export function leaderboard(db, limit = 50) {
         avatar: u.avatar,
         balance: money(balance),
         positionValue: money(value),
-        creatorEquity: equity,
+        creatorEquity: money(equity),
         netWorth,
         level: levelFor(u.xp ?? 0),
         streak: u.streak ?? 0,
@@ -737,8 +830,8 @@ export function leaderboard(db, limit = 50) {
         roi: funded > 0 ? (netWorth - funded) / funded : 0,
         profit: money(netWorth - funded),
         realized: money(u.realized_pnl),
-        marketsCreated: db.prepare('SELECT COUNT(*) AS n FROM markets WHERE creator_id = ?').get(u.id).n,
-        trades: db.prepare('SELECT COUNT(*) AS n FROM trades WHERE user_id = ? AND side != ?').get(u.id, 'settle').n,
+        marketsCreated: marketsByUser.get(u.id) ?? 0,
+        trades: tradesByUser.get(u.id) ?? 0,
       };
     })
     .sort((a, b) => b.netWorth - a.netWorth)

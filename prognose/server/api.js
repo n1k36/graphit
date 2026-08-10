@@ -32,6 +32,15 @@ function requireUser(ctx) {
   return ctx.user;
 }
 
+/**
+ * Per-account limits on state-changing endpoints. Auth was rate limited from
+ * the start; trading, market creation and comments were not, which left the
+ * write path open to a scripted flood.
+ */
+function limitWrites(ctx, action, max, windowMs = 60_000) {
+  rateLimit(`${action}:${ctx.user?.id ?? ctx.ip}`, max, windowMs);
+}
+
 function requireAdmin(ctx) {
   const user = requireUser(ctx);
   if (!user.isAdmin) throw forbidden('Admins only.');
@@ -107,9 +116,11 @@ route('GET', /^\/api\/markets$/, (ctx) => ({
   }),
 }));
 
-route('POST', /^\/api\/markets$/, (ctx) => ({
-  market: logic.createMarket(ctx.db, requireUser(ctx), ctx.body),
-}));
+route('POST', /^\/api\/markets$/, (ctx) => {
+  requireUser(ctx);
+  limitWrites(ctx, 'create-market', 10, 3600_000);
+  return { market: logic.createMarket(ctx.db, ctx.user, ctx.body) };
+});
 
 route('GET', /^\/api\/markets\/([\w-]+)$/, (ctx, slug) => {
   const row = logic.marketRowBySlug(ctx.db, slug);
@@ -128,8 +139,10 @@ route('POST', /^\/api\/markets\/([\w-]+)\/quote$/, (ctx, slug) => {
 });
 
 route('POST', /^\/api\/markets\/([\w-]+)\/trade$/, (ctx, slug) => {
+  requireUser(ctx);
+  limitWrites(ctx, 'trade', 120);
   const row = logic.marketRowBySlug(ctx.db, slug);
-  return logic.executeTrade(ctx.db, requireUser(ctx), row.id, ctx.body);
+  return logic.executeTrade(ctx.db, ctx.user, row.id, ctx.body);
 });
 
 route('POST', /^\/api\/markets\/([\w-]+)\/resolve$/, (ctx, slug) => {
@@ -145,9 +158,11 @@ route('GET', /^\/api\/markets\/([\w-]+)\/comments$/, (ctx, slug) => ({
   comments: logic.listComments(ctx.db, logic.marketRowBySlug(ctx.db, slug).id),
 }));
 
-route('POST', /^\/api\/markets\/([\w-]+)\/comments$/, (ctx, slug) => ({
-  comment: logic.addComment(ctx.db, requireUser(ctx), logic.marketRowBySlug(ctx.db, slug).id, ctx.body.body),
-}));
+route('POST', /^\/api\/markets\/([\w-]+)\/comments$/, (ctx, slug) => {
+  requireUser(ctx);
+  limitWrites(ctx, 'comment', 20);
+  return { comment: logic.addComment(ctx.db, ctx.user, logic.marketRowBySlug(ctx.db, slug).id, ctx.body.body) };
+});
 
 /* ------------------- portfolio, leaderboard, profile ------------------ */
 
@@ -204,6 +219,7 @@ route('GET', /^\/api\/wallet$/, (ctx) => {
 
 route('POST', /^\/api\/wallet\/deposit$/, async (ctx) => {
   const user = requireUser(ctx);
+  limitWrites(ctx, 'deposit', 10);
   return payments.createDeposit(ctx.db, user, ctx.body.amount);
 });
 
@@ -225,6 +241,7 @@ route('POST', /^\/api\/wallet\/deposit\/confirm$/, (ctx) => {
 
 route('POST', /^\/api\/wallet\/withdraw$/, (ctx) => {
   const user = requireUser(ctx);
+  limitWrites(ctx, 'withdraw', 5);
   const withdrawal = payments.requestWithdrawal(ctx.db, user, ctx.body.amount, ctx.body.destination);
   return { withdrawal, user: auth.getUser(ctx.db, user.id) };
 });
@@ -319,7 +336,8 @@ route('POST', /^\/api\/admin\/markets\/([\w-]+)\/feature$/, (ctx, slug) => {
   const row = logic.marketRowBySlug(ctx.db, slug);
   const featured = row.featured ? 0 : 1;
   ctx.db.prepare('UPDATE markets SET featured = ? WHERE id = ?').run(featured, row.id);
-  return { featured: !!featured };
+  // Featured markets are pinned to the top of every listing.
+  return { featured: !!featured, slug: row.slug };
 });
 
 /** Dispatch an API request. Returns a JSON-serialisable body. */

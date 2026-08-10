@@ -358,6 +358,7 @@ function renderNav() {
     logout.onclick = async () => {
       await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
       setToken(null);
+      connectStream();
       toast('Signed out.');
       navigate('#/');
     };
@@ -615,6 +616,8 @@ function renderMarket() {
               .join('')}
           </div>
         </div>
+
+        ${depthChart(market)}
 
         ${
           market.description
@@ -1129,7 +1132,11 @@ let draftOutcomes = ['Yes', 'No'];
 
 function viewCreate() {
   if (!S.user) return navigate('#/login');
+  // Categories sit at the top level of /api/config; the economics live under
+  // `settings`. Reading the numbers from the wrong level silently produced
+  // subsidy: NaN and a 400 on submit.
   const cfg = S.config;
+  const limits = S.config?.settings ?? {};
   const defaultClose = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
   const binary = draftOutcomes.length === 2 && draftOutcomes[0] === 'Yes' && draftOutcomes[1] === 'No';
 
@@ -1188,7 +1195,7 @@ function viewCreate() {
         </div>
         <div class="field">
           <label for="m-subsidy">Liquidity subsidy</label>
-          <input class="control" id="m-subsidy" type="number" min="${cfg?.minSubsidy}" max="${cfg?.maxSubsidy}" step="5" value="${cfg?.defaultSubsidy}" />
+          <input class="control" id="m-subsidy" type="number" min="${limits.minSubsidy ?? 25}" max="${limits.maxSubsidy ?? 1000}" step="5" value="${limits.defaultSubsidy ?? 100}" />
           <div class="hint">Deducted from your balance (you have ${usd(
             S.user.balance,
           )}) and returned when you settle, plus or minus the market maker's result. More subsidy means prices move less per dollar traded.</div>
@@ -1311,6 +1318,7 @@ function viewAuth(mode = 'login') {
       setToken(res.token);
       S.user = res.user;
       renderNav();
+      connectStream();
       toast(`Welcome, ${res.user.username}.`, 'success');
       navigate('#/');
     } catch (err) {
@@ -1379,7 +1387,18 @@ async function route() {
         setApp('<div class="empty">That page does not exist. <a href="#/" style="color:var(--accent)">Back to markets</a></div>');
     }
   } catch (err) {
-    setApp(`<div class="empty">${esc(err.message)}</div>`);
+    // Fallback UI: say what happened, and give a way to recover.
+    const offline = !navigator.onLine;
+    setApp(`<div class="empty">
+        <div style="font-size:34px;margin-bottom:10px">${offline ? '📡' : '⚠️'}</div>
+        <div style="color:var(--text);font-weight:600;margin-bottom:6px">${
+          offline ? 'You are offline' : 'That did not load'
+        }</div>
+        <div style="margin-bottom:16px">${esc(offline ? 'Reconnect and try again — your positions are safe.' : err.message)}</div>
+        <button class="btn sm" id="retry-route">Try again</button>
+      </div>`);
+    const retry = document.getElementById('retry-route');
+    if (retry) retry.onclick = () => route();
   }
 }
 
@@ -1485,15 +1504,32 @@ async function boot() {
   registerServiceWorker();
   refreshTicker();
   refreshNotifications();
-  setInterval(refreshTicker, 12_000);
+  connectStream();
+
+  // The stream carries trades; these are the safety net for a dropped
+  // connection or a browser without EventSource, so they run slowly.
+  setInterval(() => {
+    if (LIVE.status !== 'live') refreshTicker();
+  }, 30_000);
   setInterval(() => {
     if (S.user) refreshNotifications();
-  }, 20_000);
-  // Keep the headline stats fresh without a reload.
-  setInterval(async () => {
-    if (currentRoute().head !== '') return;
-    S.stats = await api('/api/stats').catch(() => S.stats);
-  }, 30_000);
+  }, 60_000);
+
+  // The browser tells us about connectivity long before a request times out.
+  window.addEventListener('online', () => {
+    LIVE.status = 'connecting';
+    renderLiveStatus();
+    connectStream();
+    route();
+  });
+  window.addEventListener('offline', () => {
+    LIVE.status = 'offline';
+    renderLiveStatus();
+  });
+  // Coming back to a backgrounded tab should not show a stale board.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && LIVE.status !== 'live') connectStream();
+  });
 }
 
 
@@ -1550,10 +1586,7 @@ async function refreshTicker() {
     const { activity } = await api('/api/activity?limit=22');
     if (!activity.length) return;
     S.activity = activity;
-    // Rendered twice so the marquee can loop seamlessly.
-    const markup = activity.map(tickerItem).join('');
-    rail.innerHTML = markup + markup;
-    rail.style.animationDuration = `${Math.max(30, activity.length * 3.2)}s`;
+    paintTicker();
   } catch {
     /* the ticker is decoration — never let it break the page */
   }
@@ -2239,6 +2272,260 @@ function achievementStrip(achievements) {
               <span class="badge-hint">${esc(a.earned ? 'unlocked' : a.hint)}</span>
             </div>`,
           )
+          .join('')}
+      </div>
+    </div>`;
+}
+
+
+
+/* ================================================================== *
+ * Live stream: server-sent events replace the polling loops
+ * ================================================================== */
+
+const LIVE = { source: null, status: 'connecting', retry: 0, timer: null };
+
+/** Paint the connection state into the ticker label. */
+function renderLiveStatus() {
+  const label = document.querySelector('.ticker-label');
+  if (!label) return;
+  const text = { live: 'LIVE', connecting: 'CONNECTING', offline: 'OFFLINE' }[LIVE.status] ?? 'LIVE';
+  label.textContent = text;
+  label.dataset.status = LIVE.status;
+  label.title =
+    LIVE.status === 'live'
+      ? 'Streaming live trades'
+      : LIVE.status === 'connecting'
+        ? 'Reconnecting to the live feed…'
+        : 'No connection — prices may be stale';
+  document.body.classList.toggle('is-offline', LIVE.status === 'offline');
+}
+
+function connectStream() {
+  if (!('EventSource' in window)) return; // falls back to the polling below
+  LIVE.source?.close();
+  LIVE.status = 'connecting';
+  renderLiveStatus();
+
+  const url = S.token ? `/api/stream?token=${encodeURIComponent(S.token)}` : '/api/stream';
+  const source = new EventSource(url);
+  LIVE.source = source;
+
+  source.onopen = () => {
+    LIVE.status = 'live';
+    LIVE.retry = 0;
+    renderLiveStatus();
+  };
+
+  source.onerror = () => {
+    // EventSource retries on its own, but only while the response was valid.
+    // Back off and rebuild the connection so an auth change is picked up too.
+    LIVE.status = navigator.onLine ? 'connecting' : 'offline';
+    renderLiveStatus();
+    source.close();
+    clearTimeout(LIVE.timer);
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(LIVE.retry++, 5));
+    LIVE.timer = setTimeout(connectStream, delay);
+  };
+
+  source.addEventListener('trade', (event) => {
+    let frame;
+    try {
+      frame = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    onTradeEvent(frame);
+  });
+
+  source.addEventListener('settled', (event) => {
+    try {
+      const frame = JSON.parse(event.data);
+      // If you are looking at the market that just settled, refresh it.
+      if (current?.market?.slug === frame.slug) refreshMarket();
+      if (S.user) refreshNotifications();
+    } catch {
+      /* ignore malformed frame */
+    }
+  });
+}
+
+/** Fold a live trade into whatever the user is currently looking at. */
+function onTradeEvent(frame) {
+  // 1. The ticker gains the newest trade without a round trip.
+  S.activity = [
+    {
+      id: `live-${frame.at}`,
+      side: frame.fill.side,
+      shares: frame.fill.shares,
+      cost: frame.fill.cost,
+      price: frame.fill.price,
+      outcomeLabel: frame.fill.outcomeLabel,
+      user: frame.user,
+      market: frame.market,
+      createdAt: new Date(frame.at).toISOString(),
+    },
+    ...S.activity,
+  ].slice(0, 22);
+  paintTicker();
+
+  // 2. Headline stats move immediately rather than on the next poll.
+  if (S.stats) {
+    S.stats = { ...S.stats, volume24h: S.stats.volume24h + frame.fill.cost, trades24h: S.stats.trades24h + 1 };
+    const hero = document.querySelector('.hero-stats');
+    if (hero && currentRoute().head === '') {
+      hero.children[0].querySelector('b').textContent = usd(S.stats.volume24h, 0);
+      hero.children[1].querySelector('b').textContent = S.stats.trades24h.toLocaleString('en-US');
+    }
+  }
+
+  // 3. A card for that market flashes its new price.
+  const card = document.querySelector(`.market-card[data-slug="${CSS.escape(frame.slug)}"]`);
+  if (card) {
+    const value = card.querySelector('.chance-value');
+    if (value) {
+      const next = frame.prices[0];
+      const previous = parseFloat(value.textContent) / 100;
+      value.textContent = pct(next);
+      flash(value, next >= previous);
+    }
+  }
+
+  // 4. The open market page updates its prices in place — no reload, no flicker.
+  if (current?.market?.slug === frame.slug) {
+    // Keep the previous share vector so the quote preview still works between
+    // the push and the refetch below; the server reprices every fill anyway.
+    current.market.outcomes = current.market.outcomes.map((o, i) => ({ ...o, price: frame.prices[i] ?? o.price }));
+    current.market.volume = frame.volume;
+    const headline = document.querySelector('.headline-price .big');
+    if (headline) {
+      const lead = leadOutcome(current.market);
+      const previous = parseFloat(headline.textContent) / 100;
+      headline.textContent = pct(lead.price, 1);
+      flash(headline, lead.price >= previous);
+    }
+    document.querySelectorAll('.outcome-btn').forEach((button, i) => {
+      const price = button.querySelector('.price');
+      if (price && frame.prices[i] != null) price.textContent = cents(frame.prices[i]);
+    });
+    scheduleMarketRefresh();
+  }
+}
+
+/** Briefly tint an element green or red when its number moves. */
+function flash(el, up) {
+  el.classList.remove('flash-up', 'flash-down');
+  void el.offsetWidth; // restart the animation
+  el.classList.add(up ? 'flash-up' : 'flash-down');
+}
+
+/**
+ * A live price is enough to look at, but the trade panel needs the exact share
+ * vector to quote against. Refetch, coalesced so a burst costs one request.
+ */
+let marketRefreshTimer = null;
+function scheduleMarketRefresh() {
+  clearTimeout(marketRefreshTimer);
+  marketRefreshTimer = setTimeout(() => {
+    if (current?.market?.slug) refreshMarket().catch(() => {});
+  }, 1200);
+}
+
+function paintTicker() {
+  const rail = document.getElementById('ticker-rail');
+  if (!rail || !S.activity.length) return;
+  const markup = S.activity.map(tickerItem).join('');
+  rail.innerHTML = markup + markup;
+  rail.style.animationDuration = `${Math.max(30, S.activity.length * 3.2)}s`;
+}
+
+/* ================================================================== *
+ * Depth: how far the price moves as an order gets bigger
+ * ================================================================== */
+
+/**
+ * An AMM has no order book, so the honest equivalent of depth is the cost
+ * curve: for each outcome, the price you would actually pay as size grows.
+ * Flat means deep; steep means thin.
+ */
+function depthCurve(market, outcomeIndex, maxSpend) {
+  const points = [];
+  const steps = 26;
+  for (let i = 1; i <= steps; i++) {
+    const spend = (maxSpend * i) / steps;
+    const shares = sharesForBudget(market.q, market.b, outcomeIndex, spend / (1 + market.feeRate));
+    if (!(shares > 0)) continue;
+    const next = market.q.slice();
+    next[outcomeIndex] += shares;
+    points.push({ spend, avgPrice: spend / shares, marginal: pricesOf(next, market.b)[outcomeIndex] });
+  }
+  return points;
+}
+
+function depthChart(market) {
+  if (!market.q || !market.tradable) return '';
+  const maxSpend = Math.max(200, Math.round(market.volume / 4));
+  const w = 800;
+  const h = 210;
+  const padL = 40;
+  const padR = 12;
+  const padT = 12;
+  const padB = 26;
+  const innerW = w - padL - padR;
+  const innerH = h - padT - padB;
+
+  const series = market.outcomes.map((outcome) => ({
+    outcome,
+    points: depthCurve(market, outcome.index, maxSpend),
+  }));
+  const allPrices = series.flatMap((s) => s.points.map((p) => p.avgPrice));
+  if (!allPrices.length) return '';
+  const lo = Math.max(0, Math.min(...allPrices) - 0.03);
+  const hi = Math.min(1, Math.max(...allPrices) + 0.03);
+  const span = Math.max(hi - lo, 0.02);
+
+  const x = (spend) => padL + (spend / maxSpend) * innerW;
+  const y = (price) => padT + (1 - (price - lo) / span) * innerH;
+
+  const grid = [0, 0.25, 0.5, 0.75, 1]
+    .map((f) => {
+      const price = lo + span * (1 - f);
+      return `<line x1="${padL}" x2="${w - padR}" y1="${(padT + f * innerH).toFixed(1)}" y2="${(padT + f * innerH).toFixed(1)}" stroke="#1a2231"/>
+        <text x="${padL - 7}" y="${(padT + f * innerH + 3.5).toFixed(1)}" fill="#5c6880" font-size="10" text-anchor="end">${cents(price)}</text>`;
+    })
+    .join('');
+
+  const lines = series
+    .map(({ outcome, points }) => {
+      if (points.length < 2) return '';
+      const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.spend).toFixed(1)},${y(p.avgPrice).toFixed(1)}`).join(' ');
+      return `<path d="${d}" fill="none" stroke="${colorFor(market, outcome.index)}" stroke-width="2" stroke-linejoin="round"/>`;
+    })
+    .join('');
+
+  const ticks = [0.25, 0.5, 0.75, 1]
+    .map(
+      (f) =>
+        `<text x="${x(maxSpend * f).toFixed(1)}" y="${h - 7}" fill="#5c6880" font-size="10" text-anchor="middle">${usd(maxSpend * f, 0)}</text>`,
+    )
+    .join('');
+
+  return `<div class="section card">
+      <h3>Depth — what size costs you</h3>
+      <div class="muted" style="margin-bottom:10px;font-size:13.5px">
+        Average fill price as an order grows. A flat line is deep liquidity; a steep one means your own order moves the price.
+      </div>
+      <svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Average fill price by order size">
+        ${grid}${ticks}${lines}
+      </svg>
+      <div class="chart-legend">
+        ${market.outcomes
+          .map((o) => {
+            const points = series[o.index].points;
+            const slip = points.length ? (points.at(-1).avgPrice - o.price) / Math.max(o.price, 1e-6) : 0;
+            return `<span><span class="key" style="background:${colorFor(market, o.index)}"></span>${esc(o.label)}
+              <span class="faint">${usd(maxSpend, 0)} moves you ${(slip * 100).toFixed(1)}%</span></span>`;
+          })
           .join('')}
       </div>
     </div>`;

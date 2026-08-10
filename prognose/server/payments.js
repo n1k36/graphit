@@ -102,10 +102,18 @@ export async function createDeposit(db, user, amount) {
   const reference = `dep_${randomBytes(12).toString('hex')}`;
   const { checkoutUrl, providerRef } = await provider.createCheckout({ reference, amount: value, user });
 
-  db.prepare(
-    `INSERT INTO payment_intents (reference, user_id, amount, provider, status, checkout_url, provider_ref, created_at)
-     VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
-  ).run(reference, user.id, value, provider.name, checkoutUrl, providerRef, nowIso());
+  // Re-check the cap inside the write transaction. Two requests racing the
+  // earlier read could otherwise both pass a limit that only one should.
+  transaction(db, () => {
+    const confirmed = depositedInLast24h(db, user.id);
+    if (confirmed + value > cap) {
+      throw badRequest(`That would pass your 24-hour deposit limit of $${cap.toFixed(2)}.`);
+    }
+    db.prepare(
+      `INSERT INTO payment_intents (reference, user_id, amount, provider, status, checkout_url, provider_ref, created_at)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    ).run(reference, user.id, value, provider.name, checkoutUrl, providerRef, nowIso());
+  });
 
   return { reference, amount: value, provider: provider.name, checkoutUrl };
 }
@@ -244,14 +252,34 @@ export async function decideWithdrawal(db, admin, id, approve, note = '') {
   if (!admin.isAdmin) throw forbidden('Only an admin can settle withdrawals.');
   const row = db.prepare('SELECT * FROM withdrawals WHERE id = ?').get(Number(id));
   if (!row) throw notFound('No such withdrawal.');
-  if (row.status !== 'pending') throw badRequest('That withdrawal has already been settled.');
+  if (row.status !== 'pending') {
+    throw badRequest(
+      row.status === 'processing'
+        ? 'That withdrawal is mid-payout. Check the provider before retrying.'
+        : 'That withdrawal has already been settled.',
+    );
+  }
 
   if (approve) {
-    const result = await activePayoutProvider().payout({
-      amount: row.net,
-      destination: parseDestination(db, row),
-    });
-    if (!result?.ok) throw new HttpError(502, 'The payment provider refused the payout.');
+    // Claim the row before touching the provider. If the process dies mid-payout
+    // the withdrawal is left visibly 'processing' rather than 'pending', so a
+    // retry cannot pay the same person twice without someone looking at it.
+    const claimed = db
+      .prepare("UPDATE withdrawals SET status = 'processing' WHERE id = ? AND status = 'pending'")
+      .run(row.id);
+    if (claimed.changes !== 1) throw badRequest('That withdrawal is already being processed.');
+
+    try {
+      const result = await activePayoutProvider().payout({
+        amount: row.net,
+        destination: parseDestination(db, row),
+      });
+      if (!result?.ok) throw new HttpError(502, 'The payment provider refused the payout.');
+    } catch (err) {
+      // The provider refused outright, so releasing the claim is safe.
+      db.prepare("UPDATE withdrawals SET status = 'pending' WHERE id = ? AND status = 'processing'").run(row.id);
+      throw err;
+    }
   }
 
   return transaction(db, () => {

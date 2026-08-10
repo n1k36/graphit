@@ -460,6 +460,23 @@ test('play money is conserved across every account and market', () => {
   );
 });
 
+/**
+ * The create-market form reads its limits straight out of /api/config. When
+ * those keys moved under `settings`, the form silently posted subsidy: NaN and
+ * every creation failed with a 400. This pins the contract the UI depends on.
+ */
+test('/api/config exposes everything the client reads', async () => {
+  const { body } = await call('/api/config');
+  for (const key of ['brand', 'categories', 'paymentProvider', 'feeRate', 'settings', 'levels']) {
+    assert.ok(body[key] !== undefined, `/api/config is missing ${key}`);
+  }
+  for (const key of ['defaultSubsidy', 'minSubsidy', 'maxSubsidy', 'welcomeBonus', 'referralBonus', 'minDeposit', 'minWithdrawal']) {
+    assert.equal(typeof body.settings[key], 'number', `settings.${key} must be a number the form can use`);
+  }
+  assert.ok(Array.isArray(body.categories) && body.categories.length > 0);
+  assert.equal(typeof body.brand.name, 'string');
+});
+
 /* ------------------------------ transport ---------------------------- */
 
 test('unknown routes and bad payloads fail cleanly', async () => {

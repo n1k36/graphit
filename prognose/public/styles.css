@@ -1605,3 +1605,42 @@ table.data th.num {
   margin: 6px 0 10px;
   overflow-wrap: anywhere;
 }
+
+/* ================================================================== *
+ * Live state: connection status and price-change flashes
+ * ================================================================== */
+
+.ticker-label[data-status='connecting'] {
+  color: var(--warn);
+}
+.ticker-label[data-status='connecting']::before {
+  background: var(--warn);
+}
+.ticker-label[data-status='offline'] {
+  color: var(--faint);
+}
+.ticker-label[data-status='offline']::before {
+  background: var(--faint);
+  animation: none;
+}
+
+/* A number that just moved, tinted for a moment in the direction it went. */
+@keyframes flash-up {
+  0% { background: var(--yes-soft); box-shadow: 0 0 0 4px var(--yes-soft); }
+  100% { background: transparent; box-shadow: 0 0 0 4px transparent; }
+}
+@keyframes flash-down {
+  0% { background: var(--no-soft); box-shadow: 0 0 0 4px var(--no-soft); }
+  100% { background: transparent; box-shadow: 0 0 0 4px transparent; }
+}
+.flash-up { animation: flash-up 1.1s ease-out; border-radius: 4px; }
+.flash-down { animation: flash-down 1.1s ease-out; border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-up, .flash-down { animation: none; }
+}
+
+/* Offline: make it obvious that what is on screen may be stale. */
+body.is-offline .ticker { background: rgba(92, 104, 128, 0.12); }
+body.is-offline .market-card .chance-value,
+body.is-offline .headline-price .big { opacity: 0.65; }

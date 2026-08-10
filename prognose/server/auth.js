@@ -1,5 +1,5 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { getSettings, nowIso } from './db.js';
+import { CONFIG, getSettings, nowIso } from './db.js';
 import { HttpError } from './errors.js';
 import { creditUser } from './ledger.js';
 import { applyReferral, ensureProfile, getProfile, levelFor } from './engagement.js';
@@ -71,10 +71,17 @@ export function destroySession(db, token) {
 
 export function userForToken(db, token) {
   if (!token) return null;
+  const cutoff = new Date(Date.now() - CONFIG.sessionDays * 86400_000).toISOString();
   const row = db
-    .prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?')
-    .get(token);
+    .prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.created_at > ?')
+    .get(token, cutoff);
   return row ? publicUser(row, db) : null;
+}
+
+/** Delete sessions past their lifetime. Cheap; run on boot and on a timer. */
+export function pruneSessions(db) {
+  const cutoff = new Date(Date.now() - CONFIG.sessionDays * 86400_000).toISOString();
+  return db.prepare('DELETE FROM sessions WHERE created_at <= ?').run(cutoff).changes;
 }
 
 export function getUser(db, id) {
