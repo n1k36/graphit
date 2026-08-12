@@ -325,6 +325,36 @@ host that takes a Dockerfile (Fly.io, Render, Railway, a plain VPS) will run it
 as-is. Set `PAYMENTS_WEBHOOK_SECRET` to something real before exposing it, and
 put it behind HTTPS — which every one of those hosts terminates for you.
 
+**What this app needs from a host**, since it rules some popular ones out:
+
+| Requirement | Why | Rules out |
+|---|---|---|
+| A process that stays running | `/api/stream` holds a server-sent-events connection open for as long as the tab is | Serverless platforms — Vercel and Netlify functions have an execution ceiling and cannot hold a stream |
+| A writable disk that survives deploys | The ledger is a SQLite file | Any host whose filesystem is ephemeral, including Render's free plan |
+| Exactly one instance | SQLite takes one writer at a time | Autoscaling defaults; scale the box up, never out |
+
+No managed database is needed, and adding one would mean rewriting the entire
+data layer for no benefit at this size. A single small box is the whole
+infrastructure.
+
+**Render**, the shortest path to a public URL:
+
+```
+1. render.com → New → Blueprint → connect this repository
+2. Render reads render.yaml from the REPOSITORY ROOT, not from prognose/
+3. After the first deploy, set PUBLIC_BASE_URL to the https origin it gives you
+4. Sign in as demo / demo123 and change that password immediately
+```
+
+**Fly.io**, if you would rather stay on the command line:
+
+```bash
+cd prognose
+fly launch --no-deploy     # fly.toml is already here; keep it
+fly volumes create tell_data --size 1
+fly deploy
+```
+
 ## 8. Installing it as an app
 
 The app ships as an installable PWA: web manifest, service worker, generated

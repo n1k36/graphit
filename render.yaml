@@ -1,0 +1,48 @@
+# render.com blueprint — https://render.com/docs/blueprint-spec
+#
+# Render only reads this file from the *repository root*, and this repository
+# is not the application: Tell lives in prognose/. So the build context and the
+# Dockerfile are both pointed down into that directory. A blueprint left inside
+# prognose/ is simply never found, which looks exactly like Render ignoring you.
+
+services:
+  - type: web
+    name: tell
+    runtime: docker
+    dockerfilePath: ./prognose/Dockerfile
+    dockerContext: ./prognose
+
+    # The Starter plan is not optional for a real deployment: persistent disks
+    # are not available on the free plan, and a free service sleeps when idle,
+    # which drops every live price stream connected to it. To try it out
+    # without paying, set `plan: free` and delete the `disk:` block below —
+    # the database then resets on every deploy.
+    plan: starter
+    region: frankfurt
+
+    # SQLite takes one writer at a time. Scale this up, never out.
+    numInstances: 1
+
+    healthCheckPath: /healthz
+
+    disk:
+      name: tell-data
+      mountPath: /app/data
+      sizeGB: 1
+
+    envVars:
+      - key: PORT
+        value: 4173
+      - key: PROGNOSE_DB
+        value: /app/data/prognose.db
+      # Set this to the real https origin Render gives you, after the first
+      # deploy. The server refuses to boot on a live payment configuration
+      # with a non-https base URL, which is deliberate.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      # Play money until a licence and a processor agreement exist. Changing
+      # this is a legal decision, not a configuration one.
+      - key: PAYMENTS_PROVIDER
+        value: mock
+      - key: PAYMENTS_WEBHOOK_SECRET
+        generateValue: true
