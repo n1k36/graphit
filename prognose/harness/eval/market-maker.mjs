@@ -103,7 +103,7 @@ export function simulate(options = {}) {
       question: `Harness market ${m + 1}: will the coin land heads?`,
       description: 'A synthetic market with a known true probability.',
       category: 'Other',
-      emoji: '🎲',
+      symbol: 'EVAL',
       closesAt: new Date(Date.now() + 7 * 86400_000).toISOString(),
       subsidy: opts.subsidy,
       outcomes: ['Yes', 'No'],

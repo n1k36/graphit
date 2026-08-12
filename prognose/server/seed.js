@@ -27,7 +27,7 @@ const DEMO_USERS = [
 const DEMO_MARKETS = [
   {
     by: 'demo',
-    emoji: '🏛️',
+    symbol: 'POL',
     category: 'Politics',
     question: 'Will the incumbent party keep its majority at the next general election?',
     description:
@@ -38,7 +38,7 @@ const DEMO_MARKETS = [
   },
   {
     by: 'demo',
-    emoji: '₿',
+    symbol: 'BTC',
     category: 'Crypto',
     question: 'Will Bitcoin trade above $150,000 before the end of the year?',
     description:
@@ -49,7 +49,7 @@ const DEMO_MARKETS = [
   },
   {
     by: 'alice',
-    emoji: '💵',
+    symbol: 'RATE',
     category: 'Economics',
     question: 'Will the central bank cut rates at its next meeting?',
     description: 'Resolves YES if the headline policy rate is lowered by any amount at the next scheduled meeting.',
@@ -59,7 +59,7 @@ const DEMO_MARKETS = [
   },
   {
     by: 'alice',
-    emoji: '⚽',
+    symbol: 'UCL',
     category: 'Sports',
     question: 'Which club lifts the Champions League trophy this season?',
     description: 'Resolves to the club that wins the final. If the competition is abandoned the market is cancelled.',
@@ -70,7 +70,7 @@ const DEMO_MARKETS = [
   },
   {
     by: 'bob',
-    emoji: '🤖',
+    symbol: 'OPEN',
     category: 'Tech',
     question: 'Will an open-weights model top the main chatbot leaderboard this quarter?',
     description:
@@ -81,7 +81,7 @@ const DEMO_MARKETS = [
   },
   {
     by: 'bob',
-    emoji: '🚀',
+    symbol: 'LUNAR',
     category: 'Science',
     question: 'Will a crewed mission launch to lunar orbit before the close date?',
     description: 'Resolves YES on a successful crewed launch that reaches lunar orbit. A flyby without orbit counts as NO.',
@@ -91,7 +91,7 @@ const DEMO_MARKETS = [
   },
   {
     by: 'carol',
-    emoji: '🎬',
+    symbol: 'FILM',
     category: 'Culture',
     question: 'Which film wins Best Picture?',
     outcomes: ['The Long Winter', 'Neon Harbour', 'Salt & Static', 'Anything else'],
@@ -102,7 +102,7 @@ const DEMO_MARKETS = [
   },
   {
     by: 'carol',
-    emoji: '🌡️',
+    symbol: 'TEMP',
     category: 'Science',
     question: 'Will this year be declared the warmest on record?',
     description: 'Resolves YES if the primary global temperature dataset ranks the year first once final figures are published.',
@@ -141,7 +141,7 @@ export function seed(db) {
       question: spec.question,
       description: spec.description,
       category: spec.category,
-      emoji: spec.emoji,
+      symbol: spec.symbol,
       outcomes: spec.outcomes,
       closesAt: spec.closesAt,
       subsidy: spec.subsidy,
@@ -155,7 +155,7 @@ export function seed(db) {
     question: 'Did the summer transfer window break the previous spending record?',
     description: 'Resolved from the final published spending figures for the window.',
     category: 'Sports',
-    emoji: '💸',
+    symbol: 'XFER',
     closesAt: days(1),
     subsidy: 100,
   });

@@ -68,7 +68,7 @@ async function newMarket(token, overrides = {}) {
       question: overrides.question ?? 'Will the test suite pass on the first run?',
       description: 'Resolves YES if every assertion holds.',
       category: 'Tech',
-      emoji: '🧪',
+      symbol: 'TEST',
       closesAt: inAMonth(),
       subsidy: 100,
       ...overrides,

@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS markets (
   question         TEXT NOT NULL,
   description      TEXT NOT NULL DEFAULT '',
   category         TEXT NOT NULL DEFAULT 'Other',
-  emoji            TEXT NOT NULL DEFAULT '',
+  symbol           TEXT NOT NULL DEFAULT '',
   outcomes         TEXT NOT NULL,
   q                TEXT NOT NULL,
   b                REAL NOT NULL,
@@ -316,6 +316,28 @@ function ensureColumn(db, table, column, definition) {
   }
 }
 
+/**
+ * Give every market a symbol. Kept here rather than in logic.js so the codes
+ * survive an upgrade even if nobody opens the app: a market with no symbol
+ * shows an empty chip, which reads as a rendering bug rather than a default.
+ */
+const SYMBOL_BY_CATEGORY = {
+  Politics: 'POL',
+  Crypto: 'CRYPTO',
+  Sports: 'SPORT',
+  Tech: 'TECH',
+  Economics: 'ECON',
+  Culture: 'CULT',
+  Science: 'SCI',
+};
+
+function backfillSymbols(db) {
+  const blank = db.prepare("SELECT id, category FROM markets WHERE symbol = ''").all();
+  if (!blank.length) return;
+  const update = db.prepare('UPDATE markets SET symbol = ? WHERE id = ?');
+  for (const row of blank) update.run(SYMBOL_BY_CATEGORY[row.category] ?? 'GEN', row.id);
+}
+
 export function openDb(file = defaultDbPath()) {
   if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -333,6 +355,11 @@ export function openDb(file = defaultDbPath()) {
   ensureColumn(db, 'comments', 'deleted', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'users', 'suspended_until', 'TEXT');
   ensureColumn(db, 'users', 'suspended_note', "TEXT NOT NULL DEFAULT ''");
+  // Markets used to carry a decorative emoji. They carry a short ticker
+  // symbol now; a database created before the change gets the new column
+  // here and its rows backfilled from their category below.
+  ensureColumn(db, 'markets', 'symbol', "TEXT NOT NULL DEFAULT ''");
+  backfillSymbols(db);
   return db;
 }
 

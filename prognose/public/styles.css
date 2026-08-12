@@ -15,7 +15,7 @@
   --no: #f43f5e;
   --no-soft: rgba(244, 63, 94, 0.14);
   --warn: #f6b83f;
-  --radius: 14px;
+  --radius: 8px;
   --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -32,7 +32,7 @@ body {
 }
 
 body {
-  background: radial-gradient(1200px 600px at 50% -200px, #14203a 0%, var(--bg) 60%) no-repeat, var(--bg);
+  background: var(--bg);
   color: var(--text);
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 15px;
@@ -337,15 +337,18 @@ select.control {
   gap: 12px;
   align-items: flex-start;
 }
-.market-emoji {
-  width: 42px;
-  height: 42px;
-  border-radius: 11px;
-  background: var(--surface-3);
-  display: grid;
-  place-items: center;
-  font-size: 21px;
+.market-symbol {
   flex-shrink: 0;
+  align-self: flex-start;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .market-card .question {
   font-weight: 600;
@@ -481,10 +484,9 @@ select.control {
   align-items: flex-start;
   margin-bottom: 18px;
 }
-.detail-head .market-emoji {
-  width: 54px;
-  height: 54px;
-  font-size: 27px;
+.detail-head .market-symbol {
+  font-size: 12px;
+  padding: 5px 9px;
 }
 .detail-head h1 {
   font-size: 23px;
@@ -1047,7 +1049,7 @@ table.data th.num {
   align-items: center;
   gap: 12px;
   height: 36px;
-  background: linear-gradient(90deg, rgba(45, 127, 255, 0.09), rgba(10, 13, 19, 0.9));
+  background: var(--surface);
   border-bottom: 1px solid var(--border-soft);
   overflow: hidden;
   padding-left: 14px;
@@ -1095,8 +1097,11 @@ table.data th.num {
 .tick:hover {
   color: var(--text);
 }
-.tick-emoji {
-  font-size: 14px;
+.tick-symbol {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  color: var(--faint);
 }
 @keyframes marquee {
   from {
@@ -1124,18 +1129,15 @@ table.data th.num {
 .hero {
   position: relative;
   overflow: hidden;
-  border-radius: 20px;
+  border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: linear-gradient(135deg, #131b2e 0%, #0e1420 55%, #131b2e 100%);
-  padding: 34px 30px;
+  background: var(--surface);
+  padding: 30px 28px;
   margin-bottom: 24px;
 }
+/* The hero used to carry a blurred blue orb. Removed: it said nothing. */
 .hero-glow {
-  position: absolute;
-  inset: -60% 40% 40% -10%;
-  background: radial-gradient(closest-side, rgba(45, 127, 255, 0.28), transparent);
-  filter: blur(20px);
-  pointer-events: none;
+  display: none;
 }
 .hero-content {
   position: relative;
@@ -1166,10 +1168,7 @@ table.data th.num {
   line-height: 1.05;
   letter-spacing: -0.045em;
   margin: 0 0 10px;
-  background: linear-gradient(100deg, #fff 20%, #7fb0ff 90%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--text);
 }
 .hero-sub {
   color: var(--muted);
@@ -1220,12 +1219,11 @@ table.data th.num {
  * ================================================================== */
 
 .bonus-pill {
-  background: linear-gradient(100deg, #f6b83f, #f97316) !important;
-  color: #241200 !important;
-  font-weight: 750 !important;
-  border-radius: 999px !important;
-  padding: 7px 14px !important;
-  animation: nudge 2.6s ease-in-out infinite;
+  background: var(--surface-3) !important;
+  border: 1px solid rgba(246, 184, 63, 0.45) !important;
+  color: var(--warn) !important;
+  border-radius: var(--radius) !important;
+  padding: 6px 12px !important;
 }
 @keyframes nudge {
   0%, 88%, 100% {
@@ -1346,13 +1344,15 @@ table.data th.num {
   position: absolute;
   top: -1px;
   right: 14px;
-  background: linear-gradient(100deg, #f6b83f, #f97316);
-  color: #241200;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
+  background: var(--surface-3);
+  border: 1px solid rgba(246, 184, 63, 0.4);
+  border-top: 0;
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.11em;
   padding: 3px 8px;
-  border-radius: 0 0 7px 7px;
+  border-radius: 0 0 5px 5px;
 }
 .urgent {
   color: var(--warn);
@@ -1399,19 +1399,19 @@ table.data th.num {
 .xp-bar > span {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), #7fb0ff);
+  background: var(--accent);
 }
 .copy-row {
   display: flex;
   gap: 8px;
 }
 .referral-card {
-  background: linear-gradient(120deg, rgba(45, 127, 255, 0.1), var(--surface));
-  border-color: rgba(45, 127, 255, 0.25);
+  background: var(--surface);
+  border-color: rgba(45, 127, 255, 0.35);
 }
 .stat.accent {
-  background: linear-gradient(120deg, rgba(20, 196, 106, 0.12), var(--surface));
-  border-color: rgba(20, 196, 106, 0.3);
+  background: var(--surface);
+  border-color: rgba(20, 196, 106, 0.4);
 }
 
 .checkout {
@@ -1431,7 +1431,7 @@ table.data th.num {
   margin-bottom: 6px;
 }
 .fake-card {
-  background: linear-gradient(120deg, #1b2740, #131a2a);
+  background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 14px;
@@ -1461,7 +1461,7 @@ table.data th.num {
 }
 .bar-col > span {
   width: 100%;
-  background: linear-gradient(180deg, var(--yes), rgba(20, 196, 106, 0.35));
+  background: var(--yes);
   border-radius: 3px 3px 0 0;
   min-height: 2px;
 }
@@ -1512,13 +1512,18 @@ table.data th.num {
 .badge.earned {
   opacity: 1;
   filter: none;
-  border-color: rgba(246, 184, 63, 0.4);
-  background: linear-gradient(150deg, rgba(246, 184, 63, 0.1), var(--surface-2));
+  border-color: rgba(246, 184, 63, 0.45);
+  background: var(--surface-2);
 }
-.badge-icon {
+.badge-mark {
   display: block;
-  font-size: 24px;
-  margin-bottom: 5px;
+  font-family: var(--mono);
+  font-size: 15px;
+  color: var(--faint);
+  margin-bottom: 6px;
+}
+.badge.earned .badge-mark {
+  color: var(--yes);
 }
 .badge-title {
   display: block;
@@ -1708,8 +1713,8 @@ body.is-offline .headline-price .big { opacity: 0.65; }
 }
 
 .hot-flag.featured {
-  background: linear-gradient(100deg, #7ea2ff, var(--accent));
-  color: #04122e;
+  border-color: rgba(45, 127, 255, 0.45);
+  color: #9dc0ff;
 }
 
 .side-chip {
@@ -1783,11 +1788,15 @@ body.is-offline .headline-price .big { opacity: 0.65; }
   padding-right: 26px;
   margin-bottom: 16px;
 }
-.market-emoji.sm {
-  width: 32px;
-  height: 32px;
-  font-size: 17px;
-  border-radius: 9px;
+.market-symbol.sm {
+  font-size: 10.5px;
+  padding: 3px 6px;
+}
+.market-symbol.xs {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 5px;
+  vertical-align: 1px;
 }
 .qb-outcomes {
   display: grid;

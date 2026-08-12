@@ -94,7 +94,7 @@ export class Client {
         question: 'Will the harness finish without a single 500?',
         description: 'Resolves YES if every request in this run returned a status the client expected.',
         category: 'Tech',
-        emoji: '🧪',
+        symbol: 'HARN',
         closesAt: new Date(Date.now() + 30 * 86400_000).toISOString(),
         subsidy: 200,
         ...overrides,

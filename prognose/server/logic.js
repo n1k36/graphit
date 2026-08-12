@@ -18,6 +18,28 @@ import {
 
 export const CATEGORIES = ['Politics', 'Crypto', 'Sports', 'Tech', 'Economics', 'Culture', 'Science', 'Other'];
 
+/**
+ * Every market carries a short ticker symbol rather than a picture. A creator
+ * can set their own; left blank, it falls back to the category's code, so a
+ * market always has something to identify it by in a list or on the tape.
+ */
+export const CATEGORY_SYMBOLS = {
+  Politics: 'POL',
+  Crypto: 'CRYPTO',
+  Sports: 'SPORT',
+  Tech: 'TECH',
+  Economics: 'ECON',
+  Culture: 'CULT',
+  Science: 'SCI',
+  Other: 'GEN',
+};
+
+/** Uppercase letters and digits only, at most six — it has to fit in a chip. */
+export function normaliseSymbol(input, category) {
+  const cleaned = String(input ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+  return cleaned || CATEGORY_SYMBOLS[category] || 'GEN';
+}
+
 /** Round money to 4dp and shares to 6dp so stored floats stay tidy. */
 const money = (x) => Math.round(x * 1e4) / 1e4;
 const shares = (x) => Math.round(x * 1e6) / 1e6;
@@ -43,7 +65,7 @@ export function serializeMarket(db, row, { includeTraders = false, creators = nu
     question: row.question,
     description: row.description,
     category: row.category,
-    emoji: row.emoji,
+    symbol: row.symbol,
     outcomes: labels.map((label, i) => ({ index: i, label, price: priceVector[i], shares: q[i] })),
     q,
     b: row.b,
@@ -271,7 +293,7 @@ export function createMarket(db, user, input) {
   }
   const description = String(input.description ?? '').trim().slice(0, 5000);
   const category = CATEGORIES.includes(input.category) ? input.category : 'Other';
-  const emoji = String(input.emoji ?? '').trim().slice(0, 8);
+  const symbol = normaliseSymbol(input.symbol, category);
 
   let outcomes = Array.isArray(input.outcomes) && input.outcomes.length ? input.outcomes : ['Yes', 'No'];
   outcomes = outcomes.map((o) => String(o ?? '').trim()).filter(Boolean);
@@ -308,7 +330,7 @@ export function createMarket(db, user, input) {
     const slug = uniqueSlug(db, slugify(question));
     const info = db
       .prepare(
-        `INSERT INTO markets (slug, question, description, category, emoji, outcomes, q, b, subsidy,
+        `INSERT INTO markets (slug, question, description, category, symbol, outcomes, q, b, subsidy,
                               creator_id, created_at, closes_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
@@ -317,7 +339,7 @@ export function createMarket(db, user, input) {
         question,
         description,
         category,
-        emoji,
+        symbol,
         JSON.stringify(outcomes),
         JSON.stringify(new Array(outcomes.length).fill(0)),
         b,
@@ -562,7 +584,7 @@ export function executeTrade(db, user, marketId, input) {
       price: result.fill.avgPrice,
     },
     user: { username: user.username, avatar: user.avatar },
-    market: { slug: result.market.slug, question: result.market.question, emoji: result.market.emoji },
+    market: { slug: result.market.slug, question: result.market.question, symbol: result.market.symbol },
   });
   return result;
 }
@@ -701,7 +723,7 @@ export function resolveMarket(db, user, marketId, outcome) {
     status: result.market.status,
     resolvedOutcome: result.market.resolvedOutcome,
     question: result.market.question,
-    emoji: result.market.emoji,
+    symbol: result.market.symbol,
     topWinner: result.topWinner,
   });
   return result;
@@ -734,7 +756,7 @@ export function portfolio(db, userId) {
   if (!user) throw notFound('No such user.');
   const rows = db
     .prepare(
-      `SELECT p.*, m.slug, m.question, m.emoji, m.outcomes, m.q, m.b, m.status, m.closes_at, m.resolved_outcome
+      `SELECT p.*, m.slug, m.question, m.symbol, m.outcomes, m.q, m.b, m.status, m.closes_at, m.resolved_outcome
        FROM positions p JOIN markets m ON m.id = p.market_id
        WHERE p.user_id = ? ORDER BY p.market_id DESC`,
     )
@@ -751,7 +773,7 @@ export function portfolio(db, userId) {
       marketId: r.market_id,
       slug: r.slug,
       question: r.question,
-      emoji: r.emoji,
+      symbol: r.symbol,
       outcome: r.outcome,
       outcomeLabel: JSON.parse(r.outcomes)[r.outcome],
       shares: r.shares,

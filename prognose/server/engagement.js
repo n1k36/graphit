@@ -152,14 +152,14 @@ export function referralStats(db, userId) {
  * ------------------------------------------------------------------ */
 
 export const ACHIEVEMENTS = {
-  first_trade: { icon: '🎯', title: 'First Blood', hint: 'Place your first trade' },
-  first_win: { icon: '🏆', title: 'Called It', hint: 'Win a settled market' },
-  market_maker: { icon: '🏗️', title: 'Market Maker', hint: 'Create a market' },
-  streak_7: { icon: '🔥', title: 'Week Strong', hint: 'Claim seven days in a row' },
-  volume_1k: { icon: '💸', title: 'Volume Dealer', hint: 'Trade $1,000 of notional' },
-  volume_10k: { icon: '🐋', title: 'Whale', hint: 'Trade $10,000 of notional' },
-  recruiter: { icon: '📣', title: 'Recruiter', hint: 'Bring a friend on board' },
-  diversified: { icon: '🧩', title: 'Diversified', hint: 'Hold positions in five markets' },
+  first_trade: { title: 'First trade', hint: 'Place your first trade' },
+  first_win: { title: 'Called it', hint: 'Win a settled market' },
+  market_maker: { title: 'Market maker', hint: 'Create a market' },
+  streak_7: { title: 'Seven days', hint: 'Claim seven days in a row' },
+  volume_1k: { title: 'Volume dealer', hint: 'Trade $1,000 of notional' },
+  volume_10k: { title: 'Size', hint: 'Trade $10,000 of notional' },
+  recruiter: { title: 'Recruiter', hint: 'Bring a friend on board' },
+  diversified: { title: 'Diversified', hint: 'Hold positions in five markets' },
 };
 
 /** Award an achievement once. Returns it if it was newly earned. */
@@ -169,7 +169,7 @@ export function grant(db, userId, key) {
   if (existing) return null;
   db.prepare('INSERT INTO achievements (user_id, key, earned_at) VALUES (?, ?, ?)').run(userId, key, nowIso());
   const meta = ACHIEVEMENTS[key];
-  notify(db, userId, { kind: 'achievement', title: `${meta.icon} ${meta.title}`, body: meta.hint, href: '#/portfolio' });
+  notify(db, userId, { kind: 'achievement', title: meta.title, body: meta.hint, href: '#/portfolio' });
   return { key, ...meta };
 }
 
@@ -233,7 +233,7 @@ export function markNotificationsRead(db, userId) {
  * Trending and the live ticker
  * ------------------------------------------------------------------ */
 
-/** 24-hour volume per market, used for the 🔥 badge and the hot sort. */
+/** 24-hour volume per market, behind the "active" badge and the hot sort. */
 export function trendingVolume(db) {
   const since = new Date(Date.now() - 86400_000).toISOString();
   const rows = db
@@ -250,7 +250,7 @@ export function liveActivity(db, limit = 25) {
   return db
     .prepare(
       `SELECT t.id, t.side, t.outcome, t.shares, t.cost, t.avg_price, t.created_at,
-              u.username, u.avatar, m.slug, m.question, m.emoji, m.outcomes
+              u.username, u.avatar, m.slug, m.question, m.symbol, m.outcomes
        FROM trades t
        JOIN users u ON u.id = t.user_id
        JOIN markets m ON m.id = t.market_id
@@ -266,7 +266,7 @@ export function liveActivity(db, limit = 25) {
       price: r.avg_price,
       outcomeLabel: JSON.parse(r.outcomes)[r.outcome],
       user: { username: r.username, avatar: r.avatar },
-      market: { slug: r.slug, question: r.question, emoji: r.emoji },
+      market: { slug: r.slug, question: r.question, symbol: r.symbol },
       createdAt: r.created_at,
     }));
 }

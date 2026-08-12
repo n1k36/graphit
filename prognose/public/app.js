@@ -337,12 +337,12 @@ function renderNav() {
       );
     }
     if (S.user.bonusReady) {
-      links.push(`<button class="bonus-pill" id="bonus-btn" title="Claim your daily bonus">🎁 Claim daily</button>`);
+      links.push(`<button class="bonus-pill" id="bonus-btn" title="Claim your daily bonus">Claim daily</button>`);
     } else if (S.user.streak > 0) {
-      links.push(`<span class="streak-pill" title="Daily streak">🔥 ${S.user.streak}</span>`);
+      links.push(`<span class="streak-pill" title="Daily streak">${S.user.streak}d streak</span>`);
     }
     links.push(
-      `<button class="bell" id="bell-btn" aria-label="Notifications">🔔${
+      `<button class="bell" id="bell-btn" aria-label="Notifications">Alerts${
         S.notifications?.unread ? `<span class="badge-dot">${Math.min(S.notifications.unread, 9)}</span>` : ''
       }</button>`,
       `<a href="#/wallet" class="balance-chip" title="Cash ${usd(S.user.cashBalance ?? 0)} · bonus ${usd(
@@ -355,9 +355,7 @@ function renderNav() {
       `<button id="logout-btn">Sign out</button>`,
     );
   } else {
-    links.push(`<a href="#/login" class="ghostish">Sign in</a>`, `<a href="#/signup" class="signin">Get $${
-      S.config?.settings?.welcomeBonus ?? 1000
-    } free</a>`);
+    links.push(`<a href="#/login" class="ghostish">Sign in</a>`, `<a href="#/signup" class="signin">Open an account</a>`);
   }
   if (!isStandalone() && (installPrompt || isIos())) {
     links.push(`<button class="install-btn" id="install-btn" title="Install the app">⤓ Install</button>`);
@@ -467,10 +465,10 @@ function marketCard(market) {
         : '';
 
   return `<article class="market-card ${market.hot ? 'hot' : ''}" data-slug="${esc(market.slug)}">
-      ${market.hot ? '<span class="hot-flag">🔥 HOT</span>' : ''}
-      ${market.featured && !market.hot ? '<span class="hot-flag featured">★ FEATURED</span>' : ''}
+      ${market.hot ? '<span class="hot-flag">ACTIVE</span>' : ''}
+      ${market.featured && !market.hot ? '<span class="hot-flag featured">FEATURED</span>' : ''}
       <div class="head">
-        <div class="market-emoji">${esc(market.emoji || '📈')}</div>
+        <div class="market-symbol">${esc(market.symbol || 'GEN')}</div>
         <div class="question">${esc(market.question)}</div>
         <div class="chance">
           <div class="chance-value" style="color:${market.isBinary ? colorFor(market, 0) : 'inherit'}">${pct(lead.price)}</div>
@@ -542,7 +540,7 @@ async function viewMarkets() {
       </select>
       <select class="control" data-filter="sort">
         ${[
-          ['hot', '🔥 Hot right now'],
+          ['hot', 'Most active'],
           ['volume', 'Top volume'],
           ['activity', 'Most traded'],
           ['newest', 'Newest'],
@@ -611,7 +609,7 @@ function renderMarket() {
     <div class="detail" style="margin-top:14px">
       <div>
         <div class="detail-head">
-          <div class="market-emoji">${esc(market.emoji || '📈')}</div>
+          <div class="market-symbol">${esc(market.symbol || 'GEN')}</div>
           <div style="flex:1;min-width:0">
             <h1>${esc(market.question)}</h1>
             <div class="meta-row">
@@ -620,7 +618,7 @@ function renderMarket() {
               <span>${market.traders ?? 0} traders</span>
               <span>${market.status === 'open' ? `closes ${dateLabel(market.closesAt)}` : `settled ${dateLabel(market.resolvedAt)}`}</span>
               <span>by ${esc(market.creator?.username ?? 'unknown')}</span>
-              <button class="report-link" id="report-market" title="Report this market">⚑ Report</button>
+              <button class="report-link" id="report-market" title="Report this market">Report</button>
             </div>
           </div>
         </div>
@@ -738,7 +736,7 @@ function renderMarket() {
                   <div class="who">${esc(c.user.username)} <span class="faint" style="font-weight:400">· ${timeAgo(c.createdAt)}</span></div>
                   <div class="text">${esc(c.body)}</div>
                 </div>
-                <button class="report-link" data-report-comment="${c.id}" title="Report this comment">⚑</button>
+                <button class="report-link" data-report-comment="${c.id}" title="Report this comment">Report</button>
               </div>`,
             )
             .join('')}
@@ -1077,7 +1075,7 @@ async function submitTrade() {
     S.trade.amount = '';
     for (const badge of res.unlocked ?? []) {
       celebrate();
-      toast(`${badge.icon} Achievement unlocked: ${badge.title}`, 'success');
+      toast(`Achievement unlocked — ${badge.title}`, 'success');
     }
     renderNav();
     await refreshMarket();
@@ -1107,7 +1105,7 @@ function positionsTable(positions, { showOwner = false } = {}) {
       <tbody>${positions
         .map(
           (p) => `<tr>
-            <td><a href="#/market/${esc(p.slug)}">${esc(p.emoji || '📈')} ${esc(p.question.slice(0, 60))}${
+            <td><a href="#/market/${esc(p.slug)}"><span class="market-symbol xs">${esc(p.symbol || 'GEN')}</span> ${esc(p.question.slice(0, 60))}${
               p.question.length > 60 ? '…' : ''
             }</a></td>
             <td><b>${esc(p.outcomeLabel)}</b></td>
@@ -1202,7 +1200,7 @@ async function viewLeaderboard() {
           (u) => `<tr>
             <td class="rank ${u.rank <= 3 ? 'top' : ''}">#${u.rank}</td>
             <td><div class="user-cell">${avatar(u, true)}<a href="#/user/${esc(u.username)}">${esc(u.username)}</a>${
-              u.streak > 2 ? `<span class="streak-mini">🔥${u.streak}</span>` : ''
+              u.streak > 2 ? `<span class="streak-mini">${u.streak}d</span>` : ''
             }</div></td>
             <td><span class="level-chip">L${u.level.level}</span> <span class="muted">${esc(u.level.name)}</span></td>
             <td class="num mono"><b>${usd(u.netWorth)}</b></td>
@@ -1256,8 +1254,9 @@ function viewCreate() {
           </select>
         </div>
         <div class="field">
-          <label for="m-emoji">Icon</label>
-          <input class="control" id="m-emoji" maxlength="8" placeholder="📈" />
+          <label for="m-symbol">Symbol</label>
+          <input class="control" id="m-symbol" maxlength="6" placeholder="Optional — e.g. BTC"
+                 style="text-transform:uppercase" />
         </div>
       </div>
       <div class="field">
@@ -1336,7 +1335,7 @@ function viewCreate() {
           question: el.querySelector('#m-question').value,
           description: el.querySelector('#m-description').value,
           category: el.querySelector('#m-category').value,
-          emoji: el.querySelector('#m-emoji').value,
+          symbol: el.querySelector('#m-symbol').value,
           outcomes: draftOutcomes,
           closesAt: closes ? new Date(`${closes}T23:59:59`).toISOString() : '',
           subsidy: Number(el.querySelector('#m-subsidy').value),
@@ -1486,7 +1485,7 @@ async function route() {
     // Fallback UI: say what happened, and give a way to recover.
     const offline = !navigator.onLine;
     setApp(`<div class="empty">
-        <div style="font-size:34px;margin-bottom:10px">${offline ? '📡' : '⚠️'}</div>
+        <div class="empty-label">${offline ? 'Offline' : 'Error'}</div>
         <div style="color:var(--text);font-weight:600;margin-bottom:6px">${
           offline ? 'You are offline' : 'That did not load'
         }</div>
@@ -1668,13 +1667,13 @@ function countdown(iso) {
 function tickerItem(item) {
   if (item.kind === 'win') {
     return `<a class="tick win" href="#/market/${esc(item.slug)}">
-        <span class="tick-emoji">🏆</span>
+        <span class="tick-symbol">SETTLED</span>
         <b>${esc(item.topWinner.username)}</b><span class="pos">won ${usd(item.topWinner.won)}</span>
         <span class="faint">${esc(item.question.slice(0, 46))}</span>
       </a>`;
   }
   return `<a class="tick" href="#/market/${esc(item.market.slug)}">
-      <span class="tick-emoji">${esc(item.market.emoji || '📈')}</span>
+      <span class="tick-symbol">${esc(item.market.symbol || 'GEN')}</span>
       <b>${esc(item.user.username)}</b>
       <span class="${item.side === 'buy' ? 'pos' : 'neg'}">${item.side === 'buy' ? 'bought' : 'sold'}</span>
       <b>${esc(item.outcomeLabel)}</b>
@@ -1713,7 +1712,10 @@ function heroSection(stats) {
         ${
           S.user
             ? `<a class="btn sm hero-cta" href="#/create">Create a market →</a>`
-            : `<a class="btn sm hero-cta" href="#/signup">Claim ${usd(S.config?.settings?.welcomeBonus ?? 1000, 0)} free →</a>`
+            : `<a class="btn sm hero-cta" href="#/signup">Open an account — ${usd(
+                S.config?.settings?.welcomeBonus ?? 1000,
+                0,
+              )} to start with →</a>`
         }
       </div>
     </section>`;
@@ -2373,7 +2375,7 @@ function achievementStrip(achievements) {
         ${achievements
           .map(
             (a) => `<div class="badge ${a.earned ? 'earned' : ''}" title="${esc(a.hint)}">
-              <span class="badge-icon">${a.icon}</span>
+              <span class="badge-mark">${a.earned ? '\u2713' : '\u2014'}</span>
               <span class="badge-title">${esc(a.title)}</span>
               <span class="badge-hint">${esc(a.earned ? 'unlocked' : a.hint)}</span>
             </div>`,
@@ -2706,7 +2708,7 @@ function renderQuickBet() {
       <div class="sheet">
         <button class="sheet-close" id="qb-close" aria-label="Close">×</button>
         <div class="sheet-market">
-          <span class="market-emoji sm">${esc(market.emoji || '📈')}</span>
+          <span class="market-symbol sm">${esc(market.symbol || 'GEN')}</span>
           <span>${esc(market.question)}</span>
         </div>
 
@@ -2810,7 +2812,7 @@ async function confirmQuickBet() {
     toast(`${num(res.fill.shares)} ${res.fill.outcomeLabel} at ${cents(res.fill.avgPrice)} — ${usd(res.fill.shares)} to win.`, 'success');
     for (const badge of res.unlocked ?? []) {
       celebrate();
-      toast(`${badge.icon} Achievement unlocked: ${badge.title}`, 'success');
+      toast(`Achievement unlocked — ${badge.title}`, 'success');
     }
     // Reflect it wherever the user happens to be standing.
     if (currentRoute().head === '') viewMarkets();
