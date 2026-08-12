@@ -45,8 +45,8 @@ async function loadPlaywright() {
       try {
         const module = await import(pathToFileURL(`${root}/${specifier}/index.js`).href);
         // A CommonJS build lands under .default, a real ESM one does not.
-      const chromium = module.chromium ?? module.default?.chromium;
-      if (chromium) return chromium;
+        const chromium = module.chromium ?? module.default?.chromium;
+        if (chromium) return chromium;
       } catch {
         /* keep looking */
       }
@@ -86,10 +86,10 @@ export async function runBrowser({ headless = true } = {}) {
     // Never `networkidle`: the app holds an SSE connection open forever, so
     // that wait never resolves. This cost an afternoon once.
     await page.goto(harness.base, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.market-card', { timeout: 10_000 }).catch(() => {});
+    await page.waitForSelector('.market-row', { timeout: 10_000 }).catch(() => {});
 
-    const cards = await page.locator('.market-card').count();
-    render.check('the market list renders', cards > 0, `${cards} cards on the front page`);
+    const rows = await page.locator('.market-row').count();
+    render.check('the market list renders', rows > 0, `${rows} markets in the book`);
     render.check('no uncaught errors on load', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' · '));
 
     const title = await page.title();
@@ -126,6 +126,30 @@ export async function runBrowser({ headless = true } = {}) {
         after !== before && after !== '',
         `${before || '(blank)'} → ${after || '(blank)'}`,
       );
+
+      // The book has its own repaint path, and it broke silently once when the
+      // card grid became a table and the stream kept painting `.market-card`.
+      const book = await context.newPage();
+      await book.goto(harness.base, { waitUntil: 'domcontentloaded' });
+      await book.waitForSelector(`.market-row[data-slug="${slug}"]`, { timeout: 10_000 }).catch(() => {});
+      await book.waitForTimeout(1200);
+
+      const rowPrice = () =>
+        book.locator(`.market-row[data-slug="${slug}"] .col-chance`).first().innerText().catch(() => '');
+      const rowBefore = await rowPrice();
+      await trader.trade(slug, { outcome: 1, side: 'buy', budget: 300 });
+
+      let rowAfter = rowBefore;
+      for (let i = 0; i < 30 && rowAfter === rowBefore; i += 1) {
+        await book.waitForTimeout(200);
+        rowAfter = await rowPrice();
+      }
+      live.check(
+        'the price on the market list reprices from the stream',
+        rowAfter !== rowBefore && rowAfter !== '',
+        `${rowBefore || '(blank)'} → ${rowAfter || '(blank)'}`,
+      );
+      await book.close();
     }
 
     /* ---------------- Does it work on a phone? ---------------- */
@@ -133,7 +157,7 @@ export async function runBrowser({ headless = true } = {}) {
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const small = await phone.newPage();
     await small.goto(harness.base, { waitUntil: 'domcontentloaded' });
-    await small.waitForSelector('.market-card', { timeout: 10_000 }).catch(() => {});
+    await small.waitForSelector('.market-row', { timeout: 10_000 }).catch(() => {});
     const overflow = await small.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     mobile.check('nothing overflows horizontally at 390px', overflow <= 1, `${num(overflow, 0)}px of sideways scroll`);
     await phone.close();

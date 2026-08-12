@@ -291,11 +291,9 @@ function wireChart(market, history) {
   });
 }
 
-function sparkline(market) {
+function sparkline(market, w = 260, h = 34) {
   const values = market.spark && market.spark.length > 1 ? market.spark : [1 / market.outcomes.length];
-  if (values.length < 2) return '<div style="height:34px"></div>';
-  const w = 260;
-  const h = 34;
+  if (values.length < 2) return `<div style="height:${h}px"></div>`;
   const step = w / (values.length - 1);
   // Scale to the data's own range so small moves are visible, but never
   // magnify noise: the window is at least 10 percentage points wide.
@@ -309,7 +307,7 @@ function sparkline(market) {
     .map((v, i) => `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${(h - norm(v) * (h - 6) - 3).toFixed(1)}`)
     .join(' ');
   const rising = values.at(-1) >= values[0];
-  const color = rising ? '#14c46a' : '#f43f5e';
+  const color = rising ? 'var(--yes)' : 'var(--no)';
   return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
       <path d="${path}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
     </svg>`;
@@ -323,7 +321,9 @@ function renderNav() {
   const route = currentRoute();
   const link = (href, label) =>
     `<a href="${href}" class="${route.path === href.slice(1) ? 'active' : ''}">${label}</a>`;
-  const links = [link('#/', 'Markets'), link('#/leaderboard', 'Leaderboard')];
+  const links = S.user
+    ? [link('#/dashboard', 'Dashboard'), link('#/', 'Markets'), link('#/leaderboard', 'Leaderboard')]
+    : [link('#/', 'Markets'), link('#/leaderboard', 'Leaderboard')];
 
   if (S.user) {
     const level = S.user.level ?? { level: 1, name: 'Rookie', progress: 0 };
@@ -412,86 +412,95 @@ const setApp = (html) => {
  * Markets list
  * ------------------------------------------------------------------ */
 
-function marketCard(market) {
+/**
+ * A market as a table row.
+ *
+ * The card grid this replaces put one market per tile and pushed the price
+ * to the corner. A row puts the symbol, the question, the trend, the price,
+ * the session move, the volume and both sides on one horizontal line, so a
+ * book of forty markets is scannable and every one of them is one click from
+ * a filled order.
+ */
+function marketRow(market) {
   const lead = leadOutcome(market);
   const prices = displayPrices(market);
-  const clock = countdown(market.closesAt);
-  const statusTag =
-    market.status === 'resolved'
-      ? `<span class="tag resolved">Resolved: ${esc(market.outcomes[market.resolvedOutcome].label)}</span>`
-      : market.status === 'cancelled'
-        ? '<span class="tag cancelled">Cancelled</span>'
-        : market.closed
-          ? '<span class="tag closed">Closed</span>'
-          : `<span class="${clock.urgent ? 'urgent' : 'faint'}">${clock.urgent ? '⏱ ' : ''}${clock.text}</span>`;
-
-  const rows = market.isBinary
-    ? ''
-    : `<div class="outcome-rows">${market.outcomes
-        .map((o) => ({ ...o, price: prices[o.index] }))
-        .sort((a, b) => b.price - a.price)
-        .slice(0, 3)
-        .map(
-          (o) => `<div class="outcome-row">
-            <span class="label">${esc(o.label)}</span>
-            <span class="bar"><span style="width:${(o.price * 100).toFixed(1)}%;background:${colorFor(market, o.index)}"></span></span>
-            <span class="pct">${pct(o.price, 1)}</span>
-          </div>`,
-        )
-        .join('')}${
-        market.outcomes.length > 3 ? `<div class="outcome-row faint">+${market.outcomes.length - 3} more</div>` : ''
-      }</div>`;
-
   const held = S.holdings?.[market.id] ?? [];
-  const heldValue = held.reduce((sum, h) => sum + h.shares * (market.outcomes[h.outcome]?.price ?? 0), 0);
+  const clock = countdown(market.closesAt);
 
-  // Two-outcome markets get their buttons inline; anything wider would not fit
-  // a card, so those open the sheet on the leading outcome instead.
-  const quickBet =
-    market.tradable && market.isBinary
-      ? `<div class="quick-bet">
-          ${market.outcomes
-            .map(
-              (o) => `<button class="qb ${o.index === 0 ? 'yes' : 'no'}" data-bet="${o.index}">
-                <span>${esc(o.label)}</span><b>${cents(o.price)}</b>
-              </button>`,
-            )
-            .join('')}
-        </div>`
-      : market.tradable
-        ? `<div class="quick-bet"><button class="qb neutral" data-bet="${lead.outcome.index}">Bet on ${esc(
-            lead.outcome.label.slice(0, 18),
-          )}</button></div>`
-        : '';
+  const take = !market.tradable
+    ? `<span class="faint">${
+        market.status === 'resolved'
+          ? `Settled ${esc(market.outcomes[market.resolvedOutcome].label)}`
+          : market.status === 'cancelled'
+            ? 'Cancelled'
+            : 'Closed'
+      }</span>`
+    : market.isBinary
+      ? `<div class="take">${market.outcomes
+          .map(
+            (o) => `<button class="${o.index === 0 ? 'yes' : 'no'}" data-bet="${o.index}">
+              ${esc(o.label)} <b>${cents(o.price)}</b></button>`,
+          )
+          .join('')}</div>`
+      : `<div class="take"><button class="single" data-bet="${lead.outcome.index}">Trade</button></div>`;
 
-  return `<article class="market-card ${market.hot ? 'hot' : ''}" data-slug="${esc(market.slug)}">
-      ${market.hot ? '<span class="hot-flag">ACTIVE</span>' : ''}
-      ${market.featured && !market.hot ? '<span class="hot-flag featured">FEATURED</span>' : ''}
-      <div class="head">
-        <div class="market-symbol">${esc(market.symbol || 'GEN')}</div>
-        <div class="question">${esc(market.question)}</div>
-        <div class="chance">
-          <div class="chance-value" style="color:${market.isBinary ? colorFor(market, 0) : 'inherit'}">${pct(lead.price)}</div>
-          <div class="chance-label">${esc(market.isBinary ? 'chance' : lead.outcome.label)}</div>
+  const status =
+    market.status === 'open' && !market.closed
+      ? `<span class="${clock.urgent ? 'warn-text' : 'faint'}">${esc(clock.text)}</span>`
+      : '';
+
+  return `<tr class="market-row ${market.hot ? 'hot' : ''}" data-slug="${esc(market.slug)}">
+      <td class="col-sym" data-nav><span class="market-symbol">${esc(market.symbol || 'GEN')}</span></td>
+      <td data-nav>
+        <div class="row-question">${held.length ? '<span class="holding-mark" title="You hold a position"></span>' : ''}${esc(
+          market.question,
+        )}</div>
+        <div class="row-sub">
+          ${market.isBinary ? '' : `${esc(lead.outcome.label)} leading · ${market.outcomes.length} outcomes · `}
+          ${esc(market.category)}${status ? ' · ' + status : ''}
+          ${market.featured ? ' · <span class="accent-text">Featured</span>' : ''}
         </div>
-      </div>
-      ${market.isBinary ? sparkline(market) : rows}
-      ${quickBet}
-      ${
-        held.length
-          ? `<div class="held-badge">You hold ${held
-              .map((h) => `<b>${num(h.shares, 0)} ${esc(h.outcomeLabel)}</b>`)
-              .join(' · ')} — worth ${usd(heldValue)}</div>`
-          : ''
+      </td>
+      <td class="col-trend" data-nav>${market.isBinary ? sparkline(market, 92, 26) : ''}</td>
+      <td class="num col-chance" data-nav>${pct(lead.price)}</td>
+      <td class="num col-vol" data-nav>
+        ${usd(market.volume, 0)}
+        ${market.volume24h > 0 ? `<div class="row-sub pos">+${usd(market.volume24h, 0)} 24h</div>` : ''}
+      </td>
+      <td class="col-take">${take}</td>
+    </tr>`;
+}
+
+function marketTable(markets) {
+  if (!markets.length) {
+    return '<div class="empty">No markets match that. <a href="#/create" class="accent-text">Create one?</a></div>';
+  }
+  return `<div class="panel"><div class="scroller"><table class="book">
+      <thead><tr>
+        <th>Sym</th><th>Market</th><th>Trend</th>
+        <th class="num">Chance</th><th class="num">Volume</th><th class="num">Take a side</th>
+      </tr></thead>
+      <tbody>${markets.map(marketRow).join('')}</tbody>
+    </table></div></div>`;
+}
+
+/**
+ * Rows navigate; the Yes/No buttons inside them do not. Only cells marked
+ * `data-nav` navigate, so the buttons never have to fight a bubbling click.
+ */
+function wireMarketRows(markets) {
+  app().querySelectorAll('.market-row').forEach((row) => {
+    const market = markets.find((m) => m.slug === row.dataset.slug);
+    row.onclick = (event) => {
+      const bet = event.target.closest('[data-bet]');
+      if (bet) {
+        event.stopPropagation();
+        if (market) openQuickBet(market, Number(bet.dataset.bet));
+        return;
       }
-      <div class="card-foot">
-        <span class="tag">${esc(market.category)}</span>
-        <span>${usd(market.volume, 0)} vol</span>
-        ${market.volume24h > 0 ? `<span class="pos">+${usd(market.volume24h, 0)} 24h</span>` : ''}
-        <span class="spacer"></span>
-        ${statusTag}
-      </div>
-    </article>`;
+      if (event.target.closest('[data-nav]')) navigate(`#/market/${row.dataset.slug}`);
+    };
+  });
 }
 
 async function viewMarkets() {
@@ -550,26 +559,10 @@ async function viewMarkets() {
           .join('')}
       </select>
     </div>
-    ${
-      markets.length
-        ? `<div class="grid">${markets.map(marketCard).join('')}</div>`
-        : `<div class="empty">No markets match that. <a href="#/create" style="color:var(--accent)">Create one?</a></div>`
-    }
+    ${marketTable(markets)}
   `);
 
-  app().querySelectorAll('.market-card').forEach((card) => {
-    card.onclick = (event) => {
-      // A bet button is a decision, not navigation.
-      const bet = event.target.closest('[data-bet]');
-      if (bet) {
-        event.stopPropagation();
-        const market = markets.find((m) => m.slug === card.dataset.slug);
-        if (market) openQuickBet(market, Number(bet.dataset.bet));
-        return;
-      }
-      navigate(`#/market/${card.dataset.slug}`);
-    };
-  });
+  wireMarketRows(markets);
   app().querySelectorAll('[data-filter="category"]').forEach((chip) => {
     chip.onclick = () => {
       S.filters.category = chip.dataset.value;
@@ -582,6 +575,152 @@ async function viewMarkets() {
       viewMarkets();
     };
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * Dashboard
+ * ------------------------------------------------------------------ */
+
+/**
+ * Everything here is read from the same endpoints the rest of the app uses —
+ * the portfolio, the market list and the activity feed — so the numbers can
+ * never disagree with the pages they came from.
+ */
+async function viewDashboard() {
+  if (!S.user) return navigate('#/login');
+  setApp('<div class="loading">Loading dashboard…</div>');
+
+  const [portfolio, listing, activity, stats] = await Promise.all([
+    api('/api/portfolio'),
+    api('/api/markets?status=open&sort=hot&limit=60'),
+    api('/api/activity?limit=10').catch(() => ({ activity: [] })),
+    api('/api/stats').catch(() => null),
+  ]);
+
+  const s = portfolio.summary;
+  S.holdings = listing.holdings ?? {};
+  const markets = listing.markets ?? [];
+
+  // Biggest movers of the session, by how far the price has travelled across
+  // the sparkline window the list endpoint already returns.
+  const movers = markets
+    .filter((m) => m.tradable && m.spark && m.spark.length > 1)
+    .map((m) => ({ market: m, move: m.spark.at(-1) - m.spark[0] }))
+    .sort((a, b) => Math.abs(b.move) - Math.abs(a.move))
+    .slice(0, 5);
+
+  const figure = (label, value, extra = '') =>
+    `<div class="figure"><div class="label">${label}</div><dd>${value}</dd>${
+      extra ? `<div class="delta">${extra}</div>` : ''
+    }</div>`;
+
+  setApp(`
+    ${suspensionBanner()}
+    <div class="page-head">
+      <div>
+        <div class="label">Account</div>
+        <h1>Dashboard</h1>
+        <div class="muted">Marked to the current market price, live.</div>
+      </div>
+    </div>
+
+    <dl class="figures">
+      ${figure('Net worth', usd(s.netWorth))}
+      ${figure('Cash', usd(s.balance), S.user.bonusBalance > 0 ? `${usd(S.user.bonusBalance)} promo credit` : '')}
+      ${figure('At risk', usd(s.positionValue))}
+      ${figure('Unrealised', signed(s.unrealized), `<span class="${cls(s.unrealized)}">${
+        s.invested > 0 ? `${s.unrealized >= 0 ? '+' : '−'}${Math.abs((s.unrealized / s.invested) * 100).toFixed(1)}%` : '—'
+      }</span>`)}
+      ${figure('Realised', signed(s.realized))}
+      ${figure('All-time', signed(s.profit))}
+    </dl>
+
+    <div class="dash-cols">
+      <div>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="label">Open</span><h2>Your positions</h2>
+            <span class="spacer"></span>
+            <span class="label">${portfolio.positions.length} held</span>
+          </div>
+          ${
+            portfolio.positions.length
+              ? `<div class="scroller">${positionsTable(portfolio.positions)}</div>`
+              : `<div class="empty">Nothing open yet.<br /><a class="btn sm" href="#/">Browse markets</a></div>`
+          }
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><span class="label">Session</span><h2>Biggest moves</h2></div>
+          ${
+            movers.length
+              ? `<div class="scroller"><table class="book"><tbody>${movers
+                  .map(
+                    ({ market, move }) => `<tr class="market-row" data-slug="${esc(market.slug)}">
+                      <td class="col-sym" data-nav><span class="market-symbol">${esc(market.symbol || 'GEN')}</span></td>
+                      <td data-nav><div class="row-question">${esc(market.question)}</div></td>
+                      <td class="col-trend" data-nav>${sparkline(market, 92, 26)}</td>
+                      <td class="num col-chance" data-nav>${pct(leadOutcome(market).price)}</td>
+                      <td class="num" data-nav><span class="${move >= 0 ? 'pos' : 'neg'}">${
+                        move >= 0 ? '+' : '−'
+                      }${Math.abs(move * 100).toFixed(1)}pp</span></td>
+                    </tr>`,
+                  )
+                  .join('')}</tbody></table></div>`
+              : '<div class="empty">Nothing has moved yet today.</div>'
+          }
+        </div>
+      </div>
+
+      <div>
+        <div class="panel">
+          <div class="panel-head"><span class="label">Tape</span><h2>Latest trades</h2></div>
+          ${
+            (activity.activity ?? []).length
+              ? (activity.activity ?? [])
+                  .map(
+                    (item) => `<a class="tape-line" href="#/market/${esc(item.market.slug)}">
+                      <span class="market-symbol xs">${esc(item.market.symbol || 'GEN')}</span>
+                      <span class="who">${esc(item.user.username)}</span>
+                      <span class="muted">${item.side === 'buy' ? 'bought' : 'sold'}</span>
+                      <span class="spacer"></span>
+                      <span class="muted">${esc(item.outcomeLabel)}</span>
+                      <span class="mono">${usd(item.cost, 0)}</span>
+                    </a>`,
+                  )
+                  .join('')
+              : '<div class="empty">No trades yet.</div>'
+          }
+        </div>
+
+        ${
+          stats
+            ? `<div class="panel">
+                <div class="panel-head"><span class="label">Platform</span><h2>Right now</h2></div>
+                <div class="panel-body">
+                  <div class="kv"><span>24h volume</span><b class="mono">${usd(stats.volume24h, 0)}</b></div>
+                  <div class="kv"><span>24h trades</span><b class="mono">${stats.trades24h.toLocaleString('en-US')}</b></div>
+                  <div class="kv"><span>Open markets</span><b class="mono">${stats.openMarkets}</b></div>
+                  <div class="kv"><span>Traders</span><b class="mono">${stats.traders.toLocaleString('en-US')}</b></div>
+                </div>
+              </div>`
+            : ''
+        }
+
+        ${
+          s.creatorEquity
+            ? `<div class="panel"><div class="panel-head"><span class="label">Making</span><h2>Liquidity you posted</h2></div>
+                <div class="panel-body"><p class="muted" style="margin:0">${usd(
+                  s.creatorEquity,
+                )} of your net worth is subsidy backing markets you created. It returns to your balance when they settle.</p></div>
+              </div>`
+            : ''
+        }
+      </div>
+    </div>
+  `);
+
+  wireMarketRows(markets);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1448,6 +1587,9 @@ async function route() {
       case '':
         await viewMarkets();
         break;
+      case 'dashboard':
+        await viewDashboard();
+        break;
       case 'market':
         await viewMarket(tail);
         break;
@@ -1695,30 +1837,58 @@ async function refreshTicker() {
   }
 }
 
+/**
+ * What a first-time visitor sees.
+ *
+ * The hero this replaces led with a tagline and a row of platform numbers,
+ * which tells someone nothing about why they should care. The name is the
+ * argument: a tell is what someone believes rather than what they say, which
+ * is exactly the difference between a market and a poll.
+ */
 function heroSection(stats) {
-  if (!stats) return '';
-  return `<section class="hero">
-      <div class="hero-glow"></div>
-      <div class="hero-content">
-        <div class="live-badge"><span class="dot"></span>LIVE</div>
-        <h1 class="hero-title">${esc(S.config?.brand?.tagline ?? 'Was passiert als Nächstes?')}</h1>
-        <p class="hero-sub">Every price is a probability, set by people with money on the line. Trade it, or make your own market and earn the fees.</p>
-        <div class="hero-stats">
-          <div><b>${usd(stats.volume24h, 0)}</b><span>24h volume</span></div>
-          <div><b>${stats.trades24h.toLocaleString('en-US')}</b><span>24h trades</span></div>
-          <div><b>${stats.openMarkets}</b><span>open markets</span></div>
-          <div><b>${stats.traders.toLocaleString('en-US')}</b><span>traders</span></div>
+  if (S.user) return statsStrip(stats);
+  return `<section class="welcome">
+      <div class="welcome-copy">
+        <div class="label">${esc(S.config?.brand?.name ?? 'Tell')}</div>
+        <h1>A tell is what someone believes,<br />not what they say.</h1>
+        <p>Opinions are free. A price is what people will actually risk money on — which is why a
+        market beats a poll. Turn any question into one, take a side, and sell whenever you like.</p>
+        <div class="welcome-steps">
+          <div class="welcome-step"><span class="n">01</span><div>
+            <b>Read the price as a probability</b>
+            <p>A share pays ${usd(1)} if the outcome happens. At 62¢ the market is saying 62 per cent.</p>
+          </div></div>
+          <div class="welcome-step"><span class="n">02</span><div>
+            <b>Take the side you think is mispriced</b>
+            <p>No order book, no waiting for a counterparty — the market maker always quotes both sides.</p>
+          </div></div>
+          <div class="welcome-step"><span class="n">03</span><div>
+            <b>Close whenever you like</b>
+            <p>You are not locked in until settlement. Sell the moment the price moves your way.</p>
+          </div></div>
         </div>
-        ${
-          S.user
-            ? `<a class="btn sm hero-cta" href="#/create">Create a market →</a>`
-            : `<a class="btn sm hero-cta" href="#/signup">Open an account — ${usd(
-                S.config?.settings?.welcomeBonus ?? 1000,
-                0,
-              )} to start with →</a>`
-        }
+        <div class="welcome-go">
+          <a class="btn sm" href="#/signup">Open an account — ${usd(
+            S.config?.settings?.welcomeBonus ?? 1000,
+            0,
+          )} to start with</a>
+          <a class="ghostish" href="#/login">Sign in</a>
+        </div>
       </div>
+      ${statsStrip(stats)}
     </section>`;
+}
+
+/** The platform's own numbers, on one rule. */
+function statsStrip(stats) {
+  if (!stats) return '';
+  const cell = (label, value) => `<div class="figure"><div class="label">${label}</div><dd>${value}</dd></div>`;
+  return `<dl class="figures">
+      ${cell('24h volume', usd(stats.volume24h, 0))}
+      ${cell('24h trades', stats.trades24h.toLocaleString('en-US'))}
+      ${cell('Open markets', String(stats.openMarkets))}
+      ${cell('Traders', stats.traders.toLocaleString('en-US'))}
+    </dl>`;
 }
 
 /* ================================================================== *
@@ -2484,23 +2654,34 @@ function onTradeEvent(frame) {
   // 2. Headline stats move immediately rather than on the next poll.
   if (S.stats) {
     S.stats = { ...S.stats, volume24h: S.stats.volume24h + frame.fill.cost, trades24h: S.stats.trades24h + 1 };
-    const hero = document.querySelector('.hero-stats');
-    if (hero && currentRoute().head === '') {
-      hero.children[0].querySelector('b').textContent = usd(S.stats.volume24h, 0);
-      hero.children[1].querySelector('b').textContent = S.stats.trades24h.toLocaleString('en-US');
+    const figures = document.querySelectorAll('.figures .figure dd');
+    if (figures.length >= 2 && ['', 'dashboard'].includes(currentRoute().head)) {
+      // Only the platform strip leads with 24h volume; the dashboard's own
+      // figures start with net worth, so leave those to their next render.
+      const first = document.querySelector('.figures .figure .label');
+      if (first && first.textContent.toLowerCase().startsWith('24h')) {
+        figures[0].textContent = usd(S.stats.volume24h, 0);
+        figures[1].textContent = S.stats.trades24h.toLocaleString('en-US');
+      }
     }
   }
 
-  // 3. A card for that market flashes its new price.
-  const card = document.querySelector(`.market-card[data-slug="${CSS.escape(frame.slug)}"]`);
-  if (card) {
-    const value = card.querySelector('.chance-value');
-    if (value) {
+  // 3. The row for that market reprices in place and flashes the direction.
+  const row = document.querySelector(`.market-row[data-slug="${CSS.escape(frame.slug)}"]`);
+  if (row) {
+    const chance = row.querySelector('.col-chance');
+    if (chance) {
       const next = frame.prices[0];
-      const previous = parseFloat(value.textContent) / 100;
-      value.textContent = pct(next);
-      flash(value, next >= previous);
+      const previous = parseFloat(chance.textContent) / 100;
+      chance.textContent = pct(next);
+      flash(chance, next >= previous);
     }
+    // The Yes/No buttons are what people trade from, so they cannot lag.
+    row.querySelectorAll('.take button[data-bet]').forEach((button) => {
+      const price = frame.prices[Number(button.dataset.bet)];
+      const cell = button.querySelector('b');
+      if (cell && price != null) cell.textContent = cents(price);
+    });
   }
 
   // 4. The open market page updates its prices in place — no reload, no flicker.

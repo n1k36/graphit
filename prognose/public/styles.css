@@ -313,34 +313,8 @@ select.control {
   flex: 1;
 }
 
-/* ------------------------------ market grid ---------------------------- */
+/* ---------------------------- market symbol ---------------------------- */
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-  gap: 14px;
-}
-
-.market-card {
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  cursor: pointer;
-  transition: border-color 0.15s, transform 0.15s;
-}
-.market-card:hover {
-  border-color: #2f3d55;
-  transform: translateY(-2px);
-}
-.market-card .head {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
 .market-symbol {
   flex-shrink: 0;
   align-self: flex-start;
@@ -354,61 +328,11 @@ select.control {
   color: var(--muted);
   white-space: nowrap;
 }
-.market-card .question {
-  font-weight: 600;
-  font-size: 15px;
-  line-height: 1.35;
-  letter-spacing: -0.01em;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.chance {
-  margin-left: auto;
-  text-align: right;
-  flex-shrink: 0;
-}
-.chance-value {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-.chance-label {
-  font-size: 11px;
-  color: var(--faint);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  max-width: 104px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .sparkline {
   width: 100%;
   height: 34px;
   display: block;
-}
-
-.outcome-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.outcome-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13.5px;
-}
-.outcome-row .label {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--muted);
 }
 .bar {
   position: relative;
@@ -429,17 +353,6 @@ select.control {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-}
-
-.card-foot {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 12.5px;
-  color: var(--faint);
-  border-top: 1px solid var(--border-soft);
-  padding-top: 11px;
-  margin-top: auto;
 }
 
 .tag {
@@ -1335,29 +1248,9 @@ table.data th.num {
 }
 
 /* ================================================================== *
- * Cards: hot, urgency
+ * Urgency
  * ================================================================== */
 
-.market-card {
-  position: relative;
-}
-.market-card.hot {
-  border-color: rgba(246, 184, 63, 0.35);
-}
-.hot-flag {
-  position: absolute;
-  top: -1px;
-  right: 14px;
-  background: var(--surface-3);
-  border: 1px solid rgba(246, 184, 63, 0.4);
-  border-top: 0;
-  color: var(--warn);
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.11em;
-  padding: 3px 8px;
-  border-radius: 0 0 5px 5px;
-}
 .urgent {
   color: var(--warn);
   font-weight: 650;
@@ -1651,11 +1544,11 @@ table.data th.num {
 
 /* Offline: make it obvious that what is on screen may be stale. */
 body.is-offline .ticker { background: rgba(92, 104, 128, 0.12); }
-body.is-offline .market-card .chance-value,
+body.is-offline .col-chance,
 body.is-offline .headline-price .big { opacity: 0.65; }
 
 /* ================================================================== *
- * One-tap betting on the card
+ * One-tap betting: the sheet the book's Yes/No buttons open
  * ================================================================== */
 
 .quick-bet {
@@ -1702,23 +1595,6 @@ body.is-offline .headline-price .big { opacity: 0.65; }
 }
 .qb:active {
   transform: scale(0.98);
-}
-
-.held-badge {
-  font-size: 12.5px;
-  color: var(--muted);
-  background: var(--accent-soft);
-  border: 1px solid rgba(245, 165, 36, 0.25);
-  border-radius: 8px;
-  padding: 6px 10px;
-}
-.held-badge b {
-  color: var(--text);
-}
-
-.hot-flag.featured {
-  border-color: rgba(245, 165, 36, 0.45);
-  color: var(--accent);
 }
 
 .side-chip {
@@ -1981,4 +1857,284 @@ body.is-offline .headline-price .big { opacity: 0.65; }
   display: inline-grid;
   margin-left: 6px;
   vertical-align: middle;
+}
+
+
+/* ================================================================== *
+ * ===== The book, the dashboard and the welcome =====
+ *
+ * A grid of rounded cards is what every prediction market looks like.
+ * The book is a table instead: symbol, question, trend, price and both
+ * sides on one line, so forty markets stay scannable and every one of
+ * them is one click from a filled order.
+ * ================================================================== */
+
+.panel {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-head h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.panel-body { padding: 16px; }
+.panel .empty { padding: 30px 16px; }
+
+.label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.accent-text { color: var(--accent); }
+.warn-text { color: var(--warn); }
+
+/* ------------------------------ figures --------------------------- */
+
+.figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 0 0 18px;
+  overflow: hidden;
+}
+.figure {
+  padding: 12px 16px;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+.figure:first-child { border-left: 0; }
+.figure dd {
+  margin: 5px 0 0;
+  font-family: var(--mono);
+  font-size: 20px;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.figure .delta {
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+/* -------------------------------- book ---------------------------- */
+
+.scroller { overflow-x: auto; }
+
+table.book {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.book th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 400;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.book td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+}
+table.book tbody tr:last-child td { border-bottom: 0; }
+table.book .num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.market-row { cursor: pointer; }
+.market-row:hover td { background: var(--surface-2); }
+.market-row.hot .col-sym { box-shadow: inset 2px 0 0 var(--warn); }
+
+.col-sym { width: 1%; }
+.col-trend { width: 1%; }
+.col-take { width: 1%; }
+.col-chance {
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.col-vol { white-space: nowrap; color: var(--muted); }
+
+.row-question {
+  font-size: 13.5px;
+  line-height: 1.35;
+  max-width: 52ch;
+}
+.row-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 3px;
+}
+.holding-mark {
+  display: inline-block;
+  width: 2px;
+  height: 12px;
+  background: var(--accent);
+  vertical-align: -2px;
+  margin-right: 8px;
+}
+
+/* Acting from the row is the whole point of a table view. */
+.take {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+.take button {
+  border: 1px solid var(--border);
+  background: none;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.take button:hover { color: var(--text); }
+.take .yes:hover { border-color: var(--yes); }
+.take .no:hover { border-color: var(--no); }
+.take .single:hover { border-color: var(--accent); }
+.take .yes b { color: var(--yes); font-weight: 500; }
+.take .no b { color: var(--no); font-weight: 500; }
+
+.market-symbol.xs {
+  font-size: 9.5px;
+  padding: 2px 5px;
+}
+
+/* ----------------------------- dashboard -------------------------- */
+
+.dash-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.dash-cols > * { min-width: 0; }
+@media (min-width: 1040px) {
+  .dash-cols { grid-template-columns: 1.7fr 1fr; }
+}
+
+.tape-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.tape-line:last-child { border-bottom: 0; }
+.tape-line:hover { background: var(--surface-2); }
+.tape-line .who { color: var(--text); }
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+  color: var(--muted);
+}
+.kv:last-child { border-bottom: 0; }
+.kv b { color: var(--text); font-weight: 500; }
+
+/* ------------------------------ welcome --------------------------- */
+
+.welcome { margin-bottom: 26px; }
+.welcome-copy {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: clamp(24px, 4vw, 40px);
+  margin-bottom: 14px;
+}
+.welcome h1 {
+  margin: 14px 0 0;
+  font-size: clamp(24px, 4.4vw, 36px);
+  line-height: 1.12;
+  letter-spacing: -0.04em;
+  font-weight: 700;
+  text-wrap: balance;
+}
+.welcome-copy > p {
+  color: var(--muted);
+  max-width: 56ch;
+  margin: 14px 0 0;
+  font-size: 15px;
+}
+.welcome-steps {
+  margin: 26px 0 0;
+  border-top: 1px solid var(--border-soft);
+  max-width: 62ch;
+}
+.welcome-step {
+  display: flex;
+  gap: 14px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.welcome-step .n {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  width: 18px;
+  flex: none;
+  padding-top: 2px;
+}
+.welcome-step b {
+  display: block;
+  font-size: 13.5px;
+}
+.welcome-step p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.welcome-go {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+
+@media (max-width: 720px) {
+  .col-trend, .col-vol { display: none; }
+  .row-question { font-size: 13px; }
+}
+
+/* The card sparkline stretches to its container; a table cell has to pin it,
+   or a `width: 1%` column collapses it to nothing. */
+.col-trend .sparkline {
+  width: 92px;
+  height: 26px;
 }
