@@ -43,11 +43,11 @@ const signed = (n, dp = 2) => (n >= 0 ? '+' : '') + usd(n, dp).replace('-', '');
 const cls = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : 'muted');
 
 const avatar = (user, small = false) =>
-  `<span class="avatar ${small ? 'sm' : ''}" style="background:${esc(user?.avatar || '#4f8cff')}">${esc(
+  `<span class="avatar ${small ? 'sm' : ''}" style="background:${esc(user?.avatar || '#8d8983')}">${esc(
     (user?.username || '?')[0].toUpperCase(),
   )}</span>`;
 
-const OUTCOME_COLORS = ['#14c46a', '#f43f5e', '#2d7fff', '#a855f7', '#f6b83f', '#14b8a6', '#ec4899', '#94a3b8'];
+const OUTCOME_COLORS = ['#3fb950', '#f0523f', '#6ea8fe', '#b98cf5', '#3ec9c0', '#e8739f', '#c9c3b6', '#8d8983'];
 const colorFor = (market, i) => (market.isBinary ? ['#14c46a', '#f43f5e'][i] : OUTCOME_COLORS[i % OUTCOME_COLORS.length]);
 
 /**
@@ -1635,7 +1635,7 @@ async function boot() {
 
 /** Colourful confetti burst. Fires when something good happens to you. */
 function celebrate(count = 70) {
-  const colors = ['#14c46a', '#2d7fff', '#f6b83f', '#ec4899', '#a855f7', '#ffffff'];
+  const colors = ['#3fb950', '#6ea8fe', '#f5a524', '#e8739f', '#b98cf5', '#eceae4'];
   const layer = document.createElement('div');
   layer.className = 'confetti-layer';
   for (let i = 0; i < count; i++) {

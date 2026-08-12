@@ -1,20 +1,24 @@
 :root {
-  --bg: #0a0d13;
-  --surface: #111621;
-  --surface-2: #161d2b;
-  --surface-3: #1c2536;
-  --border: #222c3d;
-  --border-soft: #1a2231;
-  --text: #e7edf8;
-  --muted: #8a97ad;
-  --faint: #5c6880;
-  --accent: #2d7fff;
-  --accent-soft: rgba(45, 127, 255, 0.14);
-  --yes: #14c46a;
-  --yes-soft: rgba(20, 196, 106, 0.14);
-  --no: #f43f5e;
-  --no-soft: rgba(244, 63, 94, 0.14);
-  --warn: #f6b83f;
+  /* A neutral near-black rather than the blue-black every trading product
+     ships, with the greys warmed very slightly towards the accent so they
+     read as chosen. Amber marks what you can act on; green and red are
+     reserved for direction, so the accent never competes with them. */
+  --bg: #0b0b0c;
+  --surface: #111112;
+  --surface-2: #17171a;
+  --surface-3: #1d1d21;
+  --border: #232326;
+  --border-soft: #1b1b1e;
+  --text: #eceae4;
+  --muted: #8d8983;
+  --faint: #5c5954;
+  --accent: #f5a524;
+  --accent-soft: rgba(245, 165, 36, 0.12);
+  --yes: #3fb950;
+  --yes-soft: rgba(63, 185, 80, 0.12);
+  --no: #f0523f;
+  --no-soft: rgba(240, 82, 63, 0.12);
+  --warn: #f5a524;
   --radius: 8px;
   --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -108,8 +112,8 @@ textarea {
   color: var(--text);
 }
 .brand-mark {
-  width: 26px;
-  height: 26px;
+  width: 20px;
+  height: 20px;
 }
 
 .search {
@@ -1271,7 +1275,7 @@ table.data th.num {
 }
 .level-chip {
   background: var(--accent-soft);
-  border: 1px solid rgba(45, 127, 255, 0.35);
+  border: 1px solid var(--accent-soft);
   color: #8fbaff;
   border-radius: 6px;
   padding: 1px 6px;
@@ -1407,7 +1411,7 @@ table.data th.num {
 }
 .referral-card {
   background: var(--surface);
-  border-color: rgba(45, 127, 255, 0.35);
+  border-color: var(--accent-soft);
 }
 .stat.accent {
   background: var(--surface);
@@ -1704,7 +1708,7 @@ body.is-offline .headline-price .big { opacity: 0.65; }
   font-size: 12.5px;
   color: var(--muted);
   background: var(--accent-soft);
-  border: 1px solid rgba(45, 127, 255, 0.25);
+  border: 1px solid rgba(245, 165, 36, 0.25);
   border-radius: 8px;
   padding: 6px 10px;
 }
@@ -1713,8 +1717,8 @@ body.is-offline .headline-price .big { opacity: 0.65; }
 }
 
 .hot-flag.featured {
-  border-color: rgba(45, 127, 255, 0.45);
-  color: #9dc0ff;
+  border-color: rgba(245, 165, 36, 0.45);
+  color: var(--accent);
 }
 
 .side-chip {

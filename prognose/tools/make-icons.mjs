@@ -1,9 +1,10 @@
 /**
  * Generates the app icons as PNGs, with no image library.
  *
- * The mark is the same one used in the favicon: a rounded blue tile with a
- * white bullseye — Tell hit the mark. Everything is drawn analytically from
- * signed distances, which gives clean anti-aliasing without supersampling.
+ * The mark is the same one used in the favicon: a T whose crossbar is a
+ * price step, in amber on a near-black tile. It is three rectangles, so it is
+ * drawn analytically with an exact box coverage test rather than approximated
+ * — which is why it stays crisp at 16px and at 512px alike.
  *
  *   node tools/make-icons.mjs
  */
@@ -77,56 +78,67 @@ function sdRoundedBox(px, py, half, radius) {
   return outside + Math.min(Math.max(qx, qy), 0) - radius;
 }
 
-/** Distance to a circle's outline — negative inside the stroke. */
-function sdRing(px, py, radius, halfWidth) {
-  return Math.abs(Math.hypot(px, py) - radius) - halfWidth;
-}
-
-/** Distance to a filled disc. */
-function sdDisc(px, py, radius) {
-  return Math.hypot(px, py) - radius;
-}
-
 /** 0 → fully outside, 1 → fully inside, smooth across one pixel. */
 const coverage = (distance) => Math.max(0, Math.min(1, 0.5 - distance));
 
-const BLUE = [45, 127, 255];
-const DEEP = [12, 74, 173];
-/** Bullseye geometry, in the original 32×32 space. */
-const RING_RADIUS = 9.5;
-const RING_STROKE = 2.4;
-const DOT_RADIUS = 3.4;
+const AMBER = [245, 165, 36];
+const TILE = [11, 11, 12];
+
+/**
+ * The mark, in its own 32×32 space: a T whose crossbar is a price step.
+ * Left arm low, right arm high, stem dropping from the join.
+ */
+const MARK = [
+  [2, 11, 11.5, 4.5],
+  [18, 5, 12, 4.5],
+  [13.5, 5, 4.5, 24],
+];
+/** The bounding box of the three bars, used to centre and scale them. */
+const MARK_BOX = { x: 2, y: 5, w: 28, h: 24 };
+
+/**
+ * Exact coverage of one pixel by an axis-aligned rectangle: the area of the
+ * intersection. Analytic anti-aliasing, no sampling.
+ */
+function boxCoverage(px, py, x, y, w, h) {
+  const dx = Math.min(px + 1, x + w) - Math.max(px, x);
+  const dy = Math.min(py + 1, y + h) - Math.max(py, y);
+  return dx <= 0 || dy <= 0 ? 0 : dx * dy;
+}
 
 function drawIcon(size, { padding = 0 } = {}) {
   const rgba = Buffer.alloc(size * size * 4);
   const scale = size / 32;
   const inset = padding * size;
   const half = size / 2 - inset;
-  const radius = 8 * scale;
-  const ringRadius = RING_RADIUS * scale;
-  const ringHalf = (RING_STROKE * scale) / 2;
-  const dotRadius = DOT_RADIUS * scale;
+  const radius = 7 * scale;
+
+  // Fit the mark inside the tile with even breathing room on all sides.
+  const room = (size - inset * 2) * 0.58;
+  const markScale = Math.min(room / MARK_BOX.w, room / MARK_BOX.h);
+  const offsetX = size / 2 - (MARK_BOX.x + MARK_BOX.w / 2) * markScale;
+  const offsetY = size / 2 - (MARK_BOX.y + MARK_BOX.h / 2) * markScale;
+  const bars = MARK.map(([x, y, w, h]) => [
+    x * markScale + offsetX,
+    y * markScale + offsetY,
+    w * markScale,
+    h * markScale,
+  ]);
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const cx = x + 0.5;
-      const cy = y + 0.5;
-
-      const tile = coverage(sdRoundedBox(cx - size / 2, cy - size / 2, half, radius));
+      const tile = coverage(sdRoundedBox(x + 0.5 - size / 2, y + 0.5 - size / 2, half, radius));
       if (tile <= 0) continue;
 
-      // A subtle diagonal gradient so the tile is not a flat slab.
-      const t = (cx + cy) / (2 * size);
-      const bg = [0, 1, 2].map((i) => Math.round(BLUE[i] * (1 - t) + DEEP[i] * t));
-
-      // The mark: an outer ring with a filled centre.
-      const dx = cx - size / 2;
-      const dy = cy - size / 2;
-      const mark = Math.min(sdRing(dx, dy, ringRadius, ringHalf), sdDisc(dx, dy, dotRadius));
-      const stroke = coverage(mark);
+      // The bars never overlap, so the coverages simply add.
+      let mark = 0;
+      for (const [bx, by, bw, bh] of bars) mark += boxCoverage(x, y, bx, by, bw, bh);
+      mark = Math.min(1, mark);
 
       const offset = (y * size + x) * 4;
-      for (let i = 0; i < 3; i++) rgba[offset + i] = Math.round(bg[i] * (1 - stroke) + 255 * stroke);
+      for (let i = 0; i < 3; i++) {
+        rgba[offset + i] = Math.round(TILE[i] * (1 - mark) + AMBER[i] * mark);
+      }
       rgba[offset + 3] = Math.round(255 * tile);
     }
   }

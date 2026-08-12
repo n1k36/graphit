@@ -5,7 +5,7 @@ import { creditUser } from './ledger.js';
 import { applyReferral, ensureProfile, getProfile, levelFor } from './engagement.js';
 
 const KEY_LEN = 64;
-const AVATAR_COLORS = ['#4f8cff', '#22c55e', '#f97316', '#a855f7', '#ec4899', '#14b8a6', '#eab308', '#ef4444'];
+const AVATAR_COLORS = ['#6ea8fe', '#3fb950', '#f5a524', '#b98cf5', '#e8739f', '#3ec9c0', '#c9c3b6', '#f0523f'];
 
 export function hashPassword(password, salt = randomBytes(16).toString('hex')) {
   return { salt, hash: scryptSync(password, salt, KEY_LEN).toString('hex') };
