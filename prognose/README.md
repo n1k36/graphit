@@ -337,13 +337,25 @@ No managed database is needed, and adding one would mean rewriting the entire
 data layer for no benefit at this size. A single small box is the whole
 infrastructure.
 
-**Render**, the shortest path to a public URL:
+**Render**, the shortest path to a public URL. One link, then a login:
+
+<https://render.com/deploy?repo=https://github.com/n1k36/graphit>
+
+It reads `render.yaml` from the repository root and fills in the service, the
+disk and the environment for you. Two things to know before clicking:
+
+- **Pick the branch the app is on.** `render.yaml` lives on
+  `claude/prognose-polymarket-app-s8c56z`, not on the default branch. The
+  blueprint pins it too, but the connect screen asks first.
+- **Starter, not free.** A persistent disk is not offered on the free plan, and
+  a free service sleeps when idle, which drops every live price stream.
+
+Then, once it is up:
 
 ```
-1. render.com → New → Blueprint → connect this repository
-2. Render reads render.yaml from the REPOSITORY ROOT, not from prognose/
-3. After the first deploy, set PUBLIC_BASE_URL to the https origin it gives you
-4. Sign in as demo / demo123 and change that password immediately
+1. Set PUBLIC_BASE_URL to the https origin Render gives you
+2. Sign in as demo / demo123 — and change that password immediately
+3. Control room → Economics → set welcomeBonus before anyone can cash out
 ```
 
 **Fly.io**, if you would rather stay on the command line:

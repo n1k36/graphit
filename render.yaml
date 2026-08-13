@@ -12,6 +12,11 @@ services:
     dockerfilePath: ./prognose/Dockerfile
     dockerContext: ./prognose
 
+    # The application lives on this branch, and so does this file. Render
+    # otherwise builds the repository's default branch, where neither exists —
+    # which fails as "no render.yaml found" and looks like a broken blueprint.
+    branch: claude/prognose-polymarket-app-s8c56z
+
     # The Starter plan is not optional for a real deployment: persistent disks
     # are not available on the free plan, and a free service sleeps when idle,
     # which drops every live price stream connected to it. To try it out
